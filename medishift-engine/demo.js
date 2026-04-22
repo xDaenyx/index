@@ -26,16 +26,12 @@ const YEAR  = 2024;
 const ctx   = buildMonthCtx(MONTH, YEAR);
 
 /* ── Per-day staffing requirements (KJ: CD + N) ── */
-// Note: with KJ-only staffing, KJ_LIMITS.max violations are expected (informational).
-// In production, add twoPCDMin / twoPNMin requirements to distribute load across 2P shifts
-// and bring each nurse's KJ count within 5–7 per month.
 const staffing = {};
 for (let d = 1; d <= ctx.DAYS; d++) {
-  const iso = ctx.dow[d];
-  const isWE = iso === 6 || iso === 7;
+  const isWE = ctx.isWeekend[d];
   staffing[d] = {
-    cdMin: isWE ? 1 : 1,
-    nMin:  isWE ? 1 : 1,
+    cdMin: isWE ? 1 : 2,
+    nMin:  isWE ? 1 : 2,
   };
 }
 
@@ -54,6 +50,12 @@ const result = generateSchedule({ nurses, requirements, month: MONTH, year: YEAR
 
 /* ── Pretty-print schedule table ── */
 const DOW_LABELS = ['', 'Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
+
+function dowOf(ctx, d) {
+  // Recompute ISO day-of-week from date (Mo=1..Su=7)
+  const js = new Date(ctx.year, ctx.month - 1, d).getDay();
+  return js === 0 ? 7 : js;
+}
 const SHIFT_COLORS = {
   [SHIFT.CD]: '\x1b[36m',       // cyan
   [SHIFT.N]: '\x1b[35m',        // magenta
@@ -79,7 +81,7 @@ console.log(`\n${'Sestra'.padEnd(15)} ${headerDays}`);
 
 const dowRow = Array.from({ length: ctx.DAYS }, (_, i) => {
   const d = i + 1;
-  return DOW_LABELS[ctx.dow[d]].padStart(4);
+  return DOW_LABELS[dowOf(ctx, d)].padStart(4);
 }).join('');
 console.log(`${''.padEnd(15)} ${dowRow}`);
 console.log('─'.repeat(16 + ctx.DAYS * 5));

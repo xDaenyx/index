@@ -301,8 +301,7 @@ Abrahamová 1.0</textarea>
       const ctx = buildMonthCtx(month, year);
       const staffing = {};
       for (let d = 1; d <= ctx.DAYS; d++) {
-        const iso = ctx.dow[d];
-        const isWE = iso === 6 || iso === 7;
+        const isWE = ctx.isWeekend[d];
         staffing[d] = { cdMin: isWE ? weCD : wdCD, nMin: isWE ? weN : wdN };
       }
 
@@ -320,9 +319,13 @@ Abrahamová 1.0</textarea>
     const { schedule, stats, violations } = result;
 
     // ── Schedule table ──
+    function dowOf(d) {
+      const js = new Date(ctx.year, ctx.month - 1, d).getDay();
+      return js === 0 ? 7 : js;
+    }
     let thead = `<thead><tr><th class="nurse-name-th">Sestra / Den</th>`;
     for (let d = 1; d <= ctx.DAYS; d++) {
-      const iso = ctx.dow[d];
+      const iso = dowOf(d);
       const cls = iso === 6 ? 'dow-sat' : iso === 7 ? 'dow-sun' : '';
       thead += `<th class="${cls}" title="${DOW[iso]}">${d}<br><small>${DOW[iso]}</small></th>`;
     }
@@ -334,7 +337,7 @@ Abrahamová 1.0</textarea>
       tbody += `<tr><td class="nurse-name">${esc(nm)}<small style="color:var(--muted);font-weight:400"> ${n.fte*100|0}%</small></td>`;
       for (let d = 1; d <= ctx.DAYS; d++) {
         const sh  = schedule[nm][d - 1];
-        const iso = ctx.dow[d];
+        const iso = dowOf(d);
         const weCls = (iso === 6 || iso === 7) ? ' s-weekend' : '';
         tbody += `<td class="${shClass(sh)}${weCls}" title="Den ${d}: ${esc(sh)}">${esc(sh)}</td>`;
       }

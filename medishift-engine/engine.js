@@ -36,7 +36,7 @@ export const SHIFT = {
   OFF: '-', // internal
 };
 
-const HOURS_NORMA = {
+export const HOURS_NORMA = {
   [SHIFT.CD]: 11.5,
   [SHIFT.N]: 11.5,
   [SHIFT.TWO_P_CD]: 11.5,
@@ -558,8 +558,23 @@ function assignWeekends(st, nurses, ctx, staffing) {
           lockShift(st, nm, sun, SHIFT.CD, 'PAT_C_sun', true);
           lockShift(st, nm, mon, SHIFT.N, 'PAT_C_mon', true);
         } else {
-          lockShift(st, nm, sat, SHIFT.CD, 'weekend_CD_sat', true);
-          lockShift(st, nm, sun, SHIFT.CD, 'weekend_CD_sun', true);
+          // Simulate sat=CD first, then re-validate sun to avoid creating 3 consecutive
+          // days when Mon is already a non-N work shift (PAT_C would not apply).
+          sc[nm][sat - 1] = SHIFT.CD;
+          const sunStillOk = !violatesConsecutiveRule(sc, ctx, nm, sun, SHIFT.CD);
+          sc[nm][sat - 1] = SHIFT.OFF; // revert simulation
+
+          if (!sunStillOk) {
+            // Pair would create >2 consecutive without whitelist coverage — assign sat only
+            if (satCDAssigned < satCDMin && canSatCD) {
+              lockShift(st, nm, sat, SHIFT.CD, 'weekend_CD_sat', true);
+              satCDAssigned++;
+            }
+            continue; // don't double-count sunCDAssigned
+          } else {
+            lockShift(st, nm, sat, SHIFT.CD, 'weekend_CD_sat', true);
+            lockShift(st, nm, sun, SHIFT.CD, 'weekend_CD_sun', true);
+          }
         }
         satCDAssigned++;
         sunCDAssigned++;
@@ -987,6 +1002,8 @@ export function generateSchedule(config) {
 export {
   buildMonthCtx,
   createEmptyState,
+  lockShift,
+  softAssign,
   applyRequirements,
   applyAutoDovFromLongOff,
   assignWeekends,
@@ -1001,6 +1018,5 @@ export {
   isOff,
   isWork,
   normHoursOf,
-  HOURS_NORMA,
   KJ_LIMITS,
 };
