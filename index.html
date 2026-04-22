@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediShift — Rozpis služeb</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --border:   #2e3147;
+      --accent:   #4f8ef7;
+      --cd:       #3ecfcf;
+      --n:        #c47be8;
+      --dov:      #f0c040;
+      --x:        #555;
+      --r:        #5ec97a;
+      --twoP:     #7aa8f7;
+      --text:     #e0e3f0;
+      --muted:    #7a7e9a;
+      --danger:   #f05060;
+      --radius:   8px;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    h1 { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+    h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: var(--text); }
+    p.sub { color: var(--muted); font-size: 0.85rem; margin-top: 4px; margin-bottom: 20px; }
+
+    .layout {
+      max-width: 1600px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+    }
+
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
+    label:first-of-type { margin-top: 0; }
+
+    input, select, textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    textarea { resize: vertical; min-height: 100px; }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 9px 18px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      justify-content: center;
+      margin-top: 16px;
+      transition: filter .15s;
+    }
+    button:hover { filter: brightness(1.15); }
+    button:active { filter: brightness(0.9); }
+
+    /* ── Schedule table ── */
+    .schedule-wrap { overflow-x: auto; }
+
+    table {
+      border-collapse: collapse;
+      font-size: 0.78rem;
+      white-space: nowrap;
+      min-width: 100%;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 5px 7px;
+      text-align: center;
+    }
+    thead th {
+      background: var(--surface);
+      color: var(--muted);
+      font-weight: 600;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    thead .nurse-name-th {
+      min-width: 140px;
+      text-align: left;
+      background: var(--surface);
+    }
+    tbody tr:nth-child(even) { background: rgba(255,255,255,.025); }
+    tbody tr:hover { background: rgba(79,142,247,.07); }
+    td.nurse-name { text-align: left; font-weight: 600; padding-left: 10px; }
+
+    /* Shift colours */
+    .s-CD   { color: var(--cd);   font-weight: 600; }
+    .s-N    { color: var(--n);    font-weight: 600; }
+    .s-2PCD { color: var(--twoP); }
+    .s-2PN  { color: var(--twoP); }
+    .s-DOV  { color: var(--dov);  }
+    .s-X    { color: var(--x);    }
+    .s-R    { color: var(--r);    }
+    .s-OFF  { color: var(--x);    }
+    .s-PN   { color: var(--muted);}
+    .s-OČR  { color: var(--muted);}
+    .s-weekend { background: rgba(79,142,247,.06); }
+
+    /* Day-of-week header */
+    .dow-sat { color: var(--accent); }
+    .dow-sun { color: var(--danger); }
+
+    /* Stats */
+    .stats-table { width: 100%; margin-top: 20px; }
+    .stats-table th { text-align: right; padding: 4px 8px; }
+    .stats-table th:first-child { text-align: left; }
+    .stats-table td { text-align: right; padding: 4px 8px; font-variant-numeric: tabular-nums; }
+    .stats-table td:first-child { text-align: left; font-weight: 600; }
+    .diff-ok   { color: #5ec97a; }
+    .diff-over { color: var(--danger); }
+    .diff-under{ color: var(--dov); }
+
+    /* Violations */
+    .violations { margin-top: 14px; }
+    .vio-ok  { color: #5ec97a; font-size: 0.85rem; }
+    .vio-err { color: var(--danger); font-size: 0.82rem; padding: 6px 10px;
+               background: rgba(240,80,96,.1); border-radius: 4px; margin-bottom: 4px; }
+
+    /* Legend */
+    .legend {
+      display: flex; flex-wrap: wrap; gap: 8px 16px;
+      margin-top: 16px; font-size: 0.78rem;
+    }
+    .legend span { display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+    .empty-state {
+      text-align: center; color: var(--muted); padding: 60px 20px;
+      font-size: 0.9rem; grid-column: 1 / -1;
+    }
+
+    @media (max-width: 800px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div style="margin-bottom:20px">
+  <h1>🏥 MediShift — Rozpis služeb</h1>
+  <p class="sub">Automatické generování měsíčního rozvrhu směn zdravotnického personálu</p>
+</div>
+
+<div class="layout">
+
+  <!-- ── LEFT: controls ── -->
+  <div class="panel" id="controls">
+    <h2>⚙️ Nastavení</h2>
+
+    <label>Měsíc</label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <select id="sel-month">
+        <option value="1">Leden</option><option value="2">Únor</option>
+        <option value="3">Březen</option><option value="4">Duben</option>
+        <option value="5" selected>Květen</option><option value="6">Červen</option>
+        <option value="7">Červenec</option><option value="8">Srpen</option>
+        <option value="9">Září</option><option value="10">Říjen</option>
+        <option value="11">Listopad</option><option value="12">Prosinec</option>
+      </select>
+      <input id="inp-year" type="number" value="2024" min="2020" max="2040" />
+    </div>
+
+    <label>Personál (jeden na řádek: Jméno FTE)</label>
+    <textarea id="inp-nurses">Nováková 1.0
+Haunerová 1.0
+Koudelková 1.0
+Krátká 0.5
+Abrahamová 1.0</textarea>
+
+    <label>Požadavky / zamčené směny</label>
+    <p style="font-size:0.75rem;color:var(--muted);margin-bottom:6px">
+      Formát: Jméno Den Směna — např. <em>Nováková 5 X</em> nebo <em>Haunerová 10 CD</em>
+    </p>
+    <textarea id="inp-reqs" placeholder="Nováková 1 X&#10;Haunerová 20 CD"></textarea>
+
+    <label>Min. obsazení / den (CD;N)</label>
+    <p style="font-size:0.75rem;color:var(--muted);margin-bottom:6px">
+      Pracovní dny a víkend (formát: <em>prac CD;N / víkend CD;N</em>)
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <input id="inp-wdCD" type="number" value="2" min="0" placeholder="CD prac" title="CD pracovní den" />
+      <input id="inp-wdN"  type="number" value="2" min="0" placeholder="N prac"  title="N pracovní den" />
+      <input id="inp-weCD" type="number" value="2" min="0" placeholder="CD víkend" title="CD víkend" />
+      <input id="inp-weN"  type="number" value="1" min="0" placeholder="N víkend"  title="N víkend" />
+    </div>
+    <div style="font-size:0.73rem;color:var(--muted);margin-top:4px;display:grid;grid-template-columns:1fr 1fr;gap:4px;text-align:center">
+      <span>← pracovní den</span><span>víkend →</span>
+    </div>
+
+    <button id="btn-generate">▶ Vygenerovat rozpis</button>
+  </div>
+
+  <!-- ── RIGHT: output ── -->
+  <div id="output">
+    <div class="empty-state panel">
+      <div style="font-size:2rem;margin-bottom:10px">📋</div>
+      Nastavte parametry vlevo a klikněte na <strong>Vygenerovat rozpis</strong>.
+    </div>
+  </div>
+
+</div>
+
+<script type="module">
+  import {
+    generateSchedule, buildMonthCtx, normalizeShift, SHIFT
+  } from './medishift-engine/engine.js';
+
+  const DOW = ['', 'Po', 'Út', 'St', 'Čt', 'Pá', 'So', 'Ne'];
+  const SHIFT_CLASS = {
+    [SHIFT.CD]: 's-CD', [SHIFT.N]: 's-N',
+    [SHIFT.TWO_P_CD]: 's-2PCD', [SHIFT.TWO_P_N]: 's-2PN',
+    [SHIFT.DOV]: 's-DOV', [SHIFT.X]: 's-X',
+    [SHIFT.R]: 's-R', [SHIFT.OFF]: 's-OFF',
+  };
+  function shClass(sh) { return SHIFT_CLASS[sh] ?? 's-OFF'; }
+
+  /** Escape HTML special characters to prevent XSS when building innerHTML. */
+  function esc(v) {
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  document.getElementById('btn-generate').addEventListener('click', () => {
+    try {
+      const month = parseInt(document.getElementById('sel-month').value);
+      const year  = parseInt(document.getElementById('inp-year').value);
+
+      // Parse nurses
+      const nurses = document.getElementById('inp-nurses').value
+        .trim().split('\n')
+        .filter(l => l.trim())
+        .map(l => {
+          const parts = l.trim().split(/\s+/);
+          return { name: parts.slice(0, -1).join(' '), fte: parseFloat(parts.at(-1)) || 1.0 };
+        });
+
+      if (!nurses.length) { alert('Zadejte alespoň jednu sestru.'); return; }
+
+      // Parse requirements
+      const requirements = document.getElementById('inp-reqs').value
+        .trim().split('\n')
+        .filter(l => l.trim())
+        .map(l => {
+          const parts = l.trim().split(/\s+/);
+          const day   = parseInt(parts.at(-2));
+          const value = normalizeShift(parts.at(-1));
+          const name  = parts.slice(0, -2).join(' ');
+          return { name, day, value };
+        })
+        .filter(r => r.name && !isNaN(r.day));
+
+      // Staffing
+      const wdCD = parseInt(document.getElementById('inp-wdCD').value) || 0;
+      const wdN  = parseInt(document.getElementById('inp-wdN').value)  || 0;
+      const weCD = parseInt(document.getElementById('inp-weCD').value) || 0;
+      const weN  = parseInt(document.getElementById('inp-weN').value)  || 0;
+
+      const ctx = buildMonthCtx(month, year);
+      const staffing = {};
+      for (let d = 1; d <= ctx.DAYS; d++) {
+        const iso = ctx.dow[d];
+        const isWE = iso === 6 || iso === 7;
+        staffing[d] = { cdMin: isWE ? weCD : wdCD, nMin: isWE ? weN : wdN };
+      }
+
+      const result = generateSchedule({ nurses, requirements, month, year, staffing });
+      renderResult(result, ctx, nurses);
+
+    } catch (err) {
+      document.getElementById('output').innerHTML =
+        `<div class="panel" style="color:var(--danger)">❌ Chyba: ${esc(err.message)}</div>`;
+      console.error(err);
+    }
+  });
+
+  function renderResult(result, ctx, nurses) {
+    const { schedule, stats, violations } = result;
+
+    // ── Schedule table ──
+    let thead = `<thead><tr><th class="nurse-name-th">Sestra / Den</th>`;
+    for (let d = 1; d <= ctx.DAYS; d++) {
+      const iso = ctx.dow[d];
+      const cls = iso === 6 ? 'dow-sat' : iso === 7 ? 'dow-sun' : '';
+      thead += `<th class="${cls}" title="${DOW[iso]}">${d}<br><small>${DOW[iso]}</small></th>`;
+    }
+    thead += '</tr></thead>';
+
+    let tbody = '<tbody>';
+    for (const n of nurses) {
+      const nm = n.name;
+      tbody += `<tr><td class="nurse-name">${esc(nm)}<small style="color:var(--muted);font-weight:400"> ${n.fte*100|0}%</small></td>`;
+      for (let d = 1; d <= ctx.DAYS; d++) {
+        const sh  = schedule[nm][d - 1];
+        const iso = ctx.dow[d];
+        const weCls = (iso === 6 || iso === 7) ? ' s-weekend' : '';
+        tbody += `<td class="${shClass(sh)}${weCls}" title="Den ${d}: ${esc(sh)}">${esc(sh)}</td>`;
+      }
+      tbody += '</tr>';
+    }
+    tbody += '</tbody>';
+
+    // ── Stats table ──
+    let statsHtml = `<table class="stats-table">
+      <thead><tr>
+        <th>Sestra</th><th>Práce</th><th>Cíl práce</th><th>Celkem</th><th>Rozdíl</th><th>KJ</th><th>2P</th><th>DOV</th>
+      </tr></thead><tbody>`;
+    for (const [nm, s] of Object.entries(stats)) {
+      const diffCls = s.diff > 0.5 ? 'diff-over' : s.diff < -0.5 ? 'diff-under' : 'diff-ok';
+      const diffStr = (s.diff >= 0 ? '+' : '') + s.diff + 'h';
+      statsHtml += `<tr>
+        <td>${esc(nm)}</td>
+        <td>${s.norma}h</td>
+        <td>${s.target}h</td>
+        <td title="Práce + DOV (≈ ${s.baseTarget}h)">${s.totalHours}h</td>
+        <td class="${diffCls}">${esc(diffStr)}</td>
+        <td>${s.kjDays}</td>
+        <td>${s.twoPDays}</td>
+        <td>${s.dovDays}</td>
+      </tr>`;
+    }
+    statsHtml += '</tbody></table>';
+
+    // ── Violations ──
+    let violHtml = '<div class="violations">';
+    if (violations.length === 0) {
+      violHtml += '<p class="vio-ok">✅ Žádná porušení pravidel</p>';
+    } else {
+      for (const v of violations) {
+        const dayStr = v.day != null ? `Den ${v.day} — ` : '';
+        const detail = v.detail ? ` (${esc(v.detail)})` : v.shift ? ` (${esc(v.shift)})` : '';
+        violHtml += `<div class="vio-err">⚠️ ${dayStr}<strong>${esc(v.nurse)}</strong>: ${esc(v.rule)}${detail}</div>`;
+      }
+    }
+    violHtml += '</div>';
+
+    // ── Legend ──
+    const legend = `<div class="legend">
+      <span><span class="legend-dot" style="background:var(--cd)"></span>CD – denní</span>
+      <span><span class="legend-dot" style="background:var(--n)"></span>N – noční</span>
+      <span><span class="legend-dot" style="background:var(--twoP)"></span>2PCD / 2PN – druhá půlka</span>
+      <span><span class="legend-dot" style="background:var(--dov)"></span>DOV – dovolená</span>
+      <span><span class="legend-dot" style="background:var(--r)"></span>R – pohotovost</span>
+      <span><span class="legend-dot" style="background:var(--x)"></span>X / – – volno</span>
+    </div>`;
+
+    const mo = new Date(ctx.year, ctx.month - 1, 1)
+      .toLocaleString('cs-CZ', { month: 'long', year: 'numeric' });
+
+    document.getElementById('output').innerHTML = `
+      <div class="panel" style="margin-bottom:16px">
+        <h2>📅 Rozpis — ${mo}</h2>
+        ${legend}
+      </div>
+      <div class="panel schedule-wrap" style="margin-bottom:16px">
+        <table>${thead}${tbody}</table>
+      </div>
+      <div class="panel">
+        <h2>📊 Statistiky</h2>
+        ${statsHtml}
+        ${violHtml}
+      </div>`;
+  }
+</script>
+</body>
+</html>

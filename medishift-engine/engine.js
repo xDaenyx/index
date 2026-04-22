@@ -48,10 +48,16 @@ const HOURS_NORMA = {
 };
 
 const DEFAULT_TARGET_FULL = 161; // hours
+/**
+ * KJ shift limits per nurse per month (scaled by FTE).
+ * min/max: total KJ (CD+N) shifts; maxExp: for experienced nurses; maxExpEx: for expert-level.
+ * Used for reporting/validation; not auto-enforced during generation.
+ */
 const KJ_LIMITS = { min: 5, max: 7, maxExp: 5, maxExpEx: 6 };
 const EMERGENCY_SPLIT_WEEKEND_N = true;
 
-function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+/** One-shift hour value (used to avoid repeating the literal 11.5 in capacity checks). */
+const SHIFT_HOURS = HOURS_NORMA[SHIFT.CD]; // 11.5
 
 function normHoursOf(sh) { return HOURS_NORMA[sh] ?? 0; }
 
@@ -305,48 +311,73 @@ function consWorkEndingAt(sc, nm, day) {
 /**
  * Whitelist patterns that allow >2 consecutive work days.
  * Returns true if placing `shift` on `day` is covered by a whitelist pattern.
+ * Checks both backward (existing days) and forward (already-assigned future days).
  *
- * PAT_A : NNN on Fri+Sat+Sun
- * PAT_B : CDNN on Fri CD, Sat N, Sun N
- * PAT_C : CDCDN on Sat CD, Sun CD, Mon N
+ * PAT_A : NNN   — Fri N + Sat N + Sun N
+ * PAT_B : CDNN  — Fri CD + Sat N + Sun N
+ * PAT_C : CDCDN — Sat CD + Sun CD + Mon N
  */
 function isPatternWhitelisted(sc, ctx, nm, day, shift) {
   const iso = ctx.dow[day];
+  const DAYS = sc[nm].length;
 
-  // PAT_A: NNN – Fri+Sat+Sun all N
+  // ── PAT_A: NNN – Fri+Sat+Sun all N ──────────────────────────────────────
   if (shift === SHIFT.N) {
-    if (iso === 7) { // Sun N → check Sat N + Fri N
+    if (iso === 7) { // Sun N → backward: Sat N + Fri N
       const sat = day - 1, fri = day - 2;
       if (sat >= 1 && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.N &&
           fri >= 1 && ctx.dow[fri] === 5 && sc[nm][fri - 1] === SHIFT.N) return true;
     }
-    if (iso === 6) { // Sat N → check Fri N (partial coverage for 2-consecutive)
-      const fri = day - 1;
+    if (iso === 6) { // Sat N → backward: Fri N; or forward: Sun N already locked
+      const fri = day - 1, sun = day + 1;
       if (fri >= 1 && ctx.dow[fri] === 5 && sc[nm][fri - 1] === SHIFT.N) return true;
+      if (sun <= DAYS && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.N) return true;
+    }
+    if (iso === 5) { // Fri N → forward: Sat N + Sun N already assigned (PAT_A midstart)
+      const sat = day + 1, sun = day + 2;
+      if (sat <= DAYS && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.N &&
+          sun <= DAYS && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.N) return true;
     }
   }
 
-  // PAT_B: CDNN – Fri CD, Sat N, Sun N
+  // ── PAT_B: CDNN – Fri CD + Sat N + Sun N ────────────────────────────────
   if (shift === SHIFT.N) {
-    if (iso === 7) { // Sun N → check Sat N + Fri CD
+    if (iso === 7) { // Sun N → backward: Sat N + Fri CD
       const sat = day - 1, fri = day - 2;
       if (sat >= 1 && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.N &&
           fri >= 1 && ctx.dow[fri] === 5 && sc[nm][fri - 1] === SHIFT.CD) return true;
     }
-    if (iso === 6) { // Sat N → check Fri CD
-      const fri = day - 1;
+    if (iso === 6) { // Sat N → backward: Fri CD; or forward: Sun N
+      const fri = day - 1, sun = day + 1;
       if (fri >= 1 && ctx.dow[fri] === 5 && sc[nm][fri - 1] === SHIFT.CD) return true;
+      if (sun <= DAYS && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.N) return true;
     }
   }
-  if (shift === SHIFT.CD && iso === 5) {
-    // Fri CD — PAT_B allowed as the first step (2 work days still ok before)
+  if (shift === SHIFT.CD && iso === 5) { // Fri CD → forward: Sat N + Sun N (PAT_B lead)
+    const sat = day + 1, sun = day + 2;
+    if (sat <= DAYS && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.N &&
+        sun <= DAYS && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.N) return true;
   }
 
-  // PAT_C: CDCDN – Sat CD, Sun CD, Mon N
-  if (shift === SHIFT.N && iso === 1) { // Mon N
+  // ── PAT_C: CDCDN – Sat CD + Sun CD + Mon N ──────────────────────────────
+  if (shift === SHIFT.N && iso === 1) { // Mon N → backward: Sun CD + Sat CD
     const sun = day - 1, sat = day - 2;
     if (sun >= 1 && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.CD &&
         sat >= 1 && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.CD) return true;
+  }
+  if (shift === SHIFT.CD) {
+    if (iso === 6) { // Sat CD → forward: Sun CD + Mon N (PAT_C lead)
+      const sun = day + 1, mon = day + 2;
+      if (sun <= DAYS && ctx.dow[sun] === 7 && sc[nm][sun - 1] === SHIFT.CD &&
+          mon <= DAYS && ctx.dow[mon] === 1 && sc[nm][mon - 1] === SHIFT.N) return true;
+    }
+    if (iso === 7) { // Sun CD → backward: Sat CD; forward: Mon N
+      const sat = day - 1, mon = day + 1;
+      if (sat >= 1 && ctx.dow[sat] === 6 && sc[nm][sat - 1] === SHIFT.CD) {
+        if (mon <= DAYS && ctx.dow[mon] === 1 && sc[nm][mon - 1] === SHIFT.N) return true;
+        if (sc[nm][mon - 1] === SHIFT.OFF) return true; // Mon not yet assigned
+      }
+    }
   }
 
   return false;
@@ -420,12 +451,15 @@ function assignWeekends(st, nurses, ctx, staffing) {
     const friCDMin = friStaff.cdMin || 0;
     const friNMin = friStaff.nMin || 0;
 
-    // Eligible nurses for this weekend (not already locked on Sat or Sun)
+    // Eligible nurses for this weekend (not already locked on Sat or Sun, AND have remaining capacity)
     const available = nurses.filter(n => {
       const nm = n.name;
       const satFree = !meta[nm][sat - 1].lock && sc[nm][sat - 1] === SHIFT.OFF;
       const sunFree = !meta[nm][sun - 1].lock && sc[nm][sun - 1] === SHIFT.OFF;
-      return satFree || sunFree;
+      if (!satFree && !sunFree) return false;
+      // Must have capacity for at least one more shift
+      const remaining = targetHours(n, sc, ctx) - countNormaHours(sc, nm, ctx);
+      return remaining > 0.5;
     });
 
     // Sort by fewest total assigned shifts so far (fair distribution)
@@ -449,23 +483,26 @@ function assignWeekends(st, nurses, ctx, staffing) {
       const sunFree = !meta[nm][sun - 1].lock && sc[nm][sun - 1] === SHIFT.OFF;
       if (!satFree && !sunFree) continue;
 
+      // Per-assignment norma capacity check
+      const remaining = targetHours(n, sc, ctx) - countNormaHours(sc, nm, ctx);
+
       // Try full N weekend (Sat+Sun N)
       const canSatN = satFree && !violatesConsecutiveRule(sc, ctx, nm, sat, SHIFT.N) &&
                       canAssign(st, ctx, nm, sat, SHIFT.N);
       const canSunN = sunFree && !violatesConsecutiveRule(sc, ctx, nm, sun, SHIFT.N) &&
                       canAssign(st, ctx, nm, sun, SHIFT.N);
 
-      if (satNAssigned < satNMin && sunNAssigned < sunNMin && canSatN && canSunN) {
+      if (satNAssigned < satNMin && sunNAssigned < sunNMin && canSatN && canSunN &&
+          remaining >= 2 * SHIFT_HOURS - 0.5) { // need at least 2 × 11.5h
         // Check Fri: prefer CDNN pattern if Fri is available
-        if (fri && !meta[nm][fri - 1].lock && sc[nm][fri - 1] === SHIFT.OFF &&
-            !pc.noFriN && isKoudelkova(nm)) {
+        const friAvail = fri && !meta[nm][fri - 1].lock && sc[nm][fri - 1] === SHIFT.OFF;
+        if (friAvail && !pc.noFriN && isKoudelkova(nm) && remaining >= 3 * SHIFT_HOURS - 0.5) {
           // Koudelkova: Fri N + Sat N + Sun N = NNN (PAT_A)
           if (!violatesConsecutiveRule(sc, ctx, nm, fri, SHIFT.N) &&
               canAssign(st, ctx, nm, fri, SHIFT.N)) {
             lockShift(st, nm, fri, SHIFT.N, 'PAT_A_fri', true);
           }
-        } else if (fri && !meta[nm][fri - 1].lock && sc[nm][fri - 1] === SHIFT.OFF &&
-                   !pc.avoidFriCD &&
+        } else if (friAvail && !pc.avoidFriCD && remaining >= 3 * SHIFT_HOURS - 0.5 &&
                    !violatesConsecutiveRule(sc, ctx, nm, fri, SHIFT.CD) &&
                    canAssign(st, ctx, nm, fri, SHIFT.CD)) {
           // CDNN pattern: Fri CD + Sat N + Sun N
@@ -478,8 +515,8 @@ function assignWeekends(st, nurses, ctx, staffing) {
         continue;
       }
 
-      // Emergency split: Sat N only or Sun N only
-      if (EMERGENCY_SPLIT_WEEKEND_N) {
+      // Emergency split: Sat N only or Sun N only (need at least 1 × 11.5h)
+      if (EMERGENCY_SPLIT_WEEKEND_N && remaining >= SHIFT_HOURS - 0.5) {
         if (satNAssigned < satNMin && canSatN) {
           lockShift(st, nm, sat, SHIFT.N, 'split_N_sat', true);
           satNAssigned++;
@@ -501,12 +538,16 @@ function assignWeekends(st, nurses, ctx, staffing) {
       const sunFree = !meta[nm][sun - 1].lock && sc[nm][sun - 1] === SHIFT.OFF;
       if (!satFree && !sunFree) continue;
 
+      const remaining = targetHours(n, sc, ctx) - countNormaHours(sc, nm, ctx);
+      if (remaining < SHIFT_HOURS - 0.5) continue; // no capacity for even one shift
+
       const canSatCD = satFree && !violatesConsecutiveRule(sc, ctx, nm, sat, SHIFT.CD) &&
                        canAssign(st, ctx, nm, sat, SHIFT.CD);
       const canSunCD = sunFree && !violatesConsecutiveRule(sc, ctx, nm, sun, SHIFT.CD) &&
                        canAssign(st, ctx, nm, sun, SHIFT.CD);
 
-      if (satCDAssigned < satCDMin && sunCDAssigned < sunCDMin && canSatCD && canSunCD) {
+      if (satCDAssigned < satCDMin && sunCDAssigned < sunCDMin && canSatCD && canSunCD &&
+          remaining >= 2 * SHIFT_HOURS - 0.5) {
         // Check for CDCDN: Sat CD + Sun CD + Mon N
         const mon = sun + 1;
         if (mon <= ctx.DAYS && ctx.dow[mon] === 1 &&
@@ -552,6 +593,10 @@ function assignWeekends(st, nurses, ctx, staffing) {
         if (friCDAssigned >= friCDMin && friNAssigned >= friNMin) break;
         const nm = n.name;
         const pc = getPersonConstraints(n);
+
+        // Norma capacity check for Friday assignment
+        const remaining = targetHours(n, sc, ctx) - countNormaHours(sc, nm, ctx);
+        if (remaining < SHIFT_HOURS - 0.5) continue;
 
         // Prefer CD on Friday (CDNN preferred over N-only on Fri)
         if (friCDAssigned < friCDMin && !pc.avoidFriCD &&
@@ -687,7 +732,9 @@ function targetHours(nurse, sc, ctx) {
 function countNormaHours(sc, nm, ctx) {
   let hours = 0;
   for (let d = 1; d <= ctx.DAYS; d++) {
-    hours += normHoursOf(sc[nm][d - 1]);
+    const sh = sc[nm][d - 1];
+    // DOV counts separately (reduces target) — not included in work-hours comparison
+    if (sh !== SHIFT.DOV) hours += normHoursOf(sh);
   }
   return hours;
 }
@@ -753,8 +800,17 @@ function validateConstraints(st, nurses, ctx) {
         violations.push({ nurse: nm, day: d, rule: 'N_before_CD', shift: sh });
       }
 
-      // X day has work
-      if (st.meta[nm][d - 1].lock && sh === SHIFT.X && isWork(sh)) {
+      // X day that was overwritten with work (should not happen via engine, but catch manual conflicts)
+      if (isWork(sh) && st.meta[nm][d - 1].lock && arr[d - 1] !== SHIFT.X) {
+        // Day was locked as X originally but has a work shift now
+      }
+      // Locked day has work even though it was marked X: check meta for original X intent
+      if (!isWork(sh) && sh !== SHIFT.X && st.meta[nm][d - 1].lock &&
+          st.meta[nm][d - 1].tag === undefined) {
+        // Normal locked non-work slot — ok
+      }
+      // A work shift placed directly on a day that the meta says should be off
+      if (isWork(sh) && st.meta[nm][d - 1].banWork) {
         violations.push({ nurse: nm, day: d, rule: 'X_has_work', shift: sh });
       }
 
@@ -779,6 +835,19 @@ function validateConstraints(st, nurses, ctx) {
         }
       }
     }
+
+    // KJ limits per nurse per month (scaled by FTE)
+    const kjCount = arr.filter(isKJ).length;
+    const kjMin = Math.round(KJ_LIMITS.min * n.fte);
+    const kjMax = Math.round(KJ_LIMITS.max * n.fte);
+    if (kjCount < kjMin) {
+      violations.push({ nurse: nm, day: null, rule: 'KJ_UNDER_MIN', shift: null,
+                        detail: `${kjCount} KJ shifts (min ${kjMin})` });
+    }
+    if (kjCount > kjMax) {
+      violations.push({ nurse: nm, day: null, rule: 'KJ_OVER_MAX', shift: null,
+                        detail: `${kjCount} KJ shifts (max ${kjMax})` });
+    }
   }
 
   return violations;
@@ -798,13 +867,19 @@ function buildOutput(st, nurses, ctx) {
     const target = targetHours(n, st.sc, ctx);
     const kjDays = sc.filter(isKJ).length;
     const twoPDays = sc.filter(is2P).length;
+    const dovHours = Math.round(dovDays * HOURS_NORMA[SHIFT.DOV] * 10) / 10;
+    // totalHours = work hours (excl DOV) + DOV hours — should approach 161*fte
+    const totalHours = Math.round((norma + dovHours) * 10) / 10;
     stats[nm] = {
-      norma: Math.round(norma * 10) / 10,
-      target: Math.round(target * 10) / 10,
-      diff: Math.round((norma - target) * 10) / 10,
+      norma: Math.round(norma * 10) / 10,          // work hours (excl. DOV)
+      target: Math.round(target * 10) / 10,         // required work hours (= 161*fte - dovHours)
+      totalHours,                                    // total incl. DOV (should ≈ 161*fte)
+      baseTarget: Math.round(DEFAULT_TARGET_FULL * n.fte * 10) / 10,
+      diff: Math.round((norma - target) * 10) / 10, // 0 = perfect balance
       kjDays,
       twoPDays,
       dovDays,
+      dovHours,
     };
   }
 
