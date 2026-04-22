@@ -145,10 +145,10 @@ function getPersonConstraints(nurse) {
 
 /**
  * Lock helper (pattern tagging).
- * @param {boolean} [hard=false] – hard locks (requirements, pattern weekends) prevent
- *   removal by balanceNorma; soft locks (auto KJ/2P fills) can be cleared.
+ * @param {boolean} [hard=true] – when true (default, per spec), sets m.lock so the slot
+ *   is immutable by balanceNorma. Pass false only for internal soft-lock use.
  */
-function lockShift(st, nm, day, value, tag, hard = false) {
+function lockShift(st, nm, day, value, tag, hard = true) {
   if (day == null) return true;
   const m = st.meta[nm][day - 1];
   if (m?.lock) return st.sc[nm][day - 1] === value;
@@ -1006,6 +1006,7 @@ export {
   softAssign,
   applyRequirements,
   applyAutoDovFromLongOff,
+  applyAutoDovFromLongOff as applyAutoDovFromLongX,
   assignWeekends,
   fillKJDays,
   fill2P,
