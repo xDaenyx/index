@@ -1,2 +1,2 @@
 # index
-rozpis sluzeb 
+rozpis služeb
