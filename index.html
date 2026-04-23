@@ -945,18 +945,20 @@ body.light{--bg:#f0f4f8;--bg2:#fff;--bg3:#e8edf4;--bg4:#dde3ed;--brd:#d0d8e4;--b
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <input type="hidden" id="rozpis-month" value="5-2026">
           <!-- 3 oddělená generovací tlačítka — skryta u probíhajících/minulých měsíců -->
-          <button class="btn btn-g btn-sm gen-only" onclick="genVse()" id="btn-gen-req"
-            style="border-color:var(--acc2);color:var(--acc2)" title="Spustí engine (požadavky + víkendy + pátky + všední dny)">
+          <button class="btn btn-g btn-sm gen-only" onclick="stepRequirements()" id="btn-gen-req"
+            style="border-color:var(--acc2);color:var(--acc2)" title="Požadavky (engine)">
             📋 1. Požadavky
           </button>
-          <button class="btn btn-g btn-sm gen-only" onclick="genVse()" id="btn-gen-wk"
-            style="border-color:var(--acc);color:var(--acc)" title="Spustí engine (požadavky + víkendy + pátky + všední dny)">
+          <button class="btn btn-g btn-sm gen-only" onclick="stepWeekends()" id="btn-gen-wk"
+            style="border-color:var(--acc);color:var(--acc)" title="Víkendy (engine)">
             📅 2. Víkendy
           </button>
-          <button class="btn btn-acc btn-sm gen-only" onclick="genVse()" id="btn-gen-fri"
-            style="border-color:#8b5cf6;color:#8b5cf6" title="Spustí engine (požadavky + víkendy + pátky + všední dny)">🌙 3. Pátek N</button>
-          <button class="btn btn-grn gen-only" onclick="genVse()" id="btn-gen-daily"
-            title="Spustí engine (požadavky + víkendy + pátky + všední dny)">
+          <button class="btn btn-acc btn-sm gen-only" onclick="stepFridays()" id="btn-gen-fri"
+            style="border-color:#8b5cf6;color:#8b5cf6" title="Pátky (engine)">
+            🌙 3. Pátek N
+          </button>
+          <button class="btn btn-grn gen-only" onclick="stepWeekdays()" id="btn-gen-daily"
+            title="Všední dny (engine)">
             ⚡ 4. Všední dny
           </button>
           <button class="btn btn-g btn-sm" onclick="toggleZamekVikendu()" id="btn-zamek-we" style="border-color:#8b5cf6;color:#8b5cf6" title="Zamkne vyplněné buňky — generátor je nepřepíše">🔓 Zamknout</button>
@@ -4721,321 +4723,6 @@ function _wkForceFillMinima(sc, nurses, weekends, reqMap, log) {
   return filled;
 }
 
-function genVikendy(onDone) {
-  if (isMonthStarted(ST.currentMonth)) { toast('⛔ Tento měsíc je zamčen — generování zakázáno','err'); return; }
-  pushUndo('Víkendy');
-  const btn = document.getElementById('btn-gen-wk');
-  btn.disabled = true; btn.textContent = '⏳ Víkendy...';
-  agSet('wk','run','Generuji víkendy...');
-
-  const statusEl = document.getElementById('rozpis-status');
-  const logs = [];
-  function log(tag,ico,msg,col) {
-    logs.push('<div style="display:flex;gap:6px;padding:3px 0;font-size:11px;border-bottom:1px solid var(--brd2)">'+
-      '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:'+col+'22;color:'+col+';font-weight:700;flex-shrink:0;font-family:var(--mono)">'+tag+'</span>'+
-      '<span style="color:var(--tx2)">'+ico+' '+msg+'</span></div>');
-    statusEl.innerHTML=logs.join(''); statusEl.scrollTop=9999;
-    setRozpisSummary(logs.length+' záznamy');
-  }
-
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month=+mS, year=+yS;
-      const C = buildCtx(month, year);
-      const {DAYS,dow,isWe,WORK,NIGHT,weekends,canPlace} = C;
-      logs.length = 0;
-      const MN=['','Leden','Únor','Březen','Duben','Květen','Červen','Červenec','Srpen','Září','Říjen','Listopad','Prosinec'];
-      const nurses = ST.nurses.filter(n => n.active && !n.warn);
-
-      // ── Načti rozpis, smaž staré víkendové přiřazení ─────────────────────
-      const sc = loadFromTable(nurses, DAYS);
-      const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-      for (const nurse of nurses) {
-        if (nurse.warn || nurse.uvazek === 0) continue; // Přeskočit manuální a administrátorské
-        const nm = nurse.name; const s = sc[nm]; const rm = reqMap[nm]||{};
-        for (const we of weekends) {
-          const {fri,sat,sun} = we;
-          if (sat && ['CD','N'].includes(s[sat-1]) && !rm[sat]) s[sat-1] = '';
-          if (sun && ['CD','N'].includes(s[sun-1]) && !rm[sun]) s[sun-1] = '';
-          if (fri && s[fri-1]==='N' && !rm[fri]) s[fri-1] = '';
-        }
-      }
-
-      log('START','📅',`${MN[month]} ${year} · ${weekends.length} víkendů (cyklový generátor)`,'#94a3b8');
-
-      // ═══════════════════════════════════════════════════════════════════════
-      // KROK 2 — GENERÁTOR VÍKENDŮ
-      const activeNurses = nurses.filter(n =>
-        (!n.warn && n.uvazek > 0 && !n.weekendOnly && !n.noConsecWeekday)
-      );
-
-      // 1) hlavní sestry bez záloh
-      const primaryNurses = activeNurses.filter(n =>
-        (!n.warn && n.uvazek > 0 && !n.weekendOnly)
-      );
-
-      // 2) pořadí: A před B, noční před nenočními, vyšší úvazek dřív
-      const orderedNurses = [...primaryNurses].sort((a, b) => {
-        const aA = a.wp === 'A' ? 1 : 0;
-        const bA = b.wp === 'A' ? 1 : 0;
-        if (aA !== bA) return bA - aA;
-        const aN = a.noc ? 1 : 0;
-        const bN = b.noc ? 1 : 0;
-        if (aN !== bN) return bN - aN;
-        return (b.uvazek || 0) - (a.uvazek || 0);
-      });
-
-      let totalAssigned = 0;
-
-      // HLAVNÍ SMŨČKA
-      for (const nurse of orderedNurses) {
-        const plan = weGetPlan(nurse, weekends, reqMap, sc, nurses);
-
-        log(
-          'PLAN',
-          '📋',
-          `${nurse.name}: ${
-            plan.length
-              ? plan.map(p => `V${p.wi + 1}=${p.type}`).join(', ')
-              : '⚠️ žádný'
-          }`,
-          plan.length ? '#6366f1' : '#f59e0b'
-        );
-
-        for (const { weekend, type, wi } of plan) {
-          const beforeNeed = _weWeekendNeed(sc, nurses, weekend);
-          weApplyPattern(sc, nurse, weekend, type, reqMap);
-          const afterNeed = _weWeekendNeed(sc, nurses, weekend);
-
-          totalAssigned++;
-
-          log(
-            'WK',
-            '🧩',
-            `${nurse.name} → V${wi + 1} = ${type} | ` +
-            `So CD:${beforeNeed.missing.sat.CD}→${afterNeed.missing.sat.CD}, ` +
-            `So N:${beforeNeed.missing.sat.N}→${afterNeed.missing.sat.N}, ` +
-            `Ne CD:${beforeNeed.missing.sun.CD}→${afterNeed.missing.sun.CD}, ` +
-            `Ne N:${beforeNeed.missing.sun.N}→${afterNeed.missing.sun.N}`,
-            '#10b981'
-          );
-        }
-      }
-
-      // ── Koudelková — speciální: POUZE Pá N + So N, max 2 pracovní víkendy ──
-      {
-        const koud = nurses.find(n => n.name === 'Koudelková');
-        if (koud && koud.active && !koud.warn) {
-          const nm = koud.name;
-          const rm = reqMap[nm] || {};
-
-          // Seřaď víkendy podle nejnižšího nočního obsazení (kde nejvíc N chybí)
-          const weScored = weekends.map((we, wi) => {
-            if (!we.sat) return { we, wi, nFri: 999, nSat: 999 };
-            const nFri = we.fri ? nurses.reduce((c,n) => c + (sc[n.name]?.[we.fri-1] === 'N' ? 1 : 0), 0) : 999;
-            const nSat = nurses.reduce((c,n) => c + (sc[n.name]?.[we.sat-1] === 'N' ? 1 : 0), 0);
-            return { we, wi, nFri, nSat, score: nFri + nSat };
-          }).filter(x => x.we.sat).sort((a, b) => a.score - b.score);
-
-          // Pravidlo: max 2 plné víkendy (Pá N + So N = 4 směny)
-          // + volitelně 1× jen Pá N na dalším víkendu (celkem 5 směn)
-          // Ne 2 pracovní víkendy PO SOBĚ
-          let assigned = 0;
-          let fullWkCount = 0;
-          let lastAssignedWi = -99;
-
-          // 1. průchod: přiřaď plné víkendy Pá N + So N (max 2)
-          for (const { we, wi } of weScored) {
-            if (assigned >= 5) break;
-            if (fullWkCount >= 2) break;
-            const { fri, sat } = we;
-            if (!fri || !sat) continue;
-            // Ne 2 pracovní víkendy po sobě
-            if (wi === lastAssignedWi + 1) continue;
-            if (['X','dov','/'].includes(rm[fri] || '') || ['X','dov','/'].includes(rm[sat] || '')) continue;
-            if (sc[nm][fri-1] || sc[nm][sat-1]) continue;
-            sc[nm][fri-1] = 'N';
-            sc[nm][sat-1] = 'N';
-            assigned += 2;
-            fullWkCount++;
-            lastAssignedWi = wi;
-            log('KOUD', '🌙', `Koudelková → V${wi+1} Pá(${fri})+So(${sat}) N [${assigned} sm., ${fullWkCount}/2 víkendů]`, '#8b5cf6');
-          }
-
-          // 2. průchod: pokud assigned < 5, přidej 1× jen-Pá N na dalším volném víkendu
-          if (assigned < 5) {
-            for (const { we, wi } of weScored) {
-              if (assigned >= 5) break;
-              const { fri } = we;
-              if (!fri) continue;
-              if (sc[nm][fri-1]) continue; // již obsazeno (plný víkend)
-              // Ne 2 po sobě
-              if (wi === lastAssignedWi + 1) continue;
-              if (['X','dov','/'].includes(rm[fri] || '')) continue;
-              sc[nm][fri-1] = 'N';
-              assigned++;
-              lastAssignedWi = wi;
-              log('KOUD', '🌙', `Koudelková → V${wi+1} jen Pá(${fri}) N [${assigned} sm.]`, '#8b5cf6');
-            }
-          }
-        }
-      }
-
-      // 3) mentorské dosřadění: Vágnerová podle Haunerové
-      const mentorAdded = _wkSyncMentorWeighted(
-        sc,
-        'Vágnerová',
-        'Haunerová',
-        weekends,
-        reqMap,
-        nurses,
-        log
-      );
-
-      // 4) záloha úplně nakonec
-      const backupAdded = _wkApplyBackupPool(
-        sc,
-        nurses,
-        weekends,
-        reqMap,
-        log
-      );
-
-      totalAssigned += mentorAdded + backupAdded;
-
-      const forcedMinAdded = _wkForceFillMinima(
-        sc,
-        nurses,
-        weekends,
-        reqMap,
-        log
-      );
-      totalAssigned += forcedMinAdded;
-
-      const fairnessMoved = _wkRebalanceFairness(
-        sc,
-        nurses,
-        weekends,
-        reqMap,
-        log
-      );
-      totalAssigned += fairnessMoved;
-
-      for (let wi = 0; wi < weekends.length; wi++) {
-        const {sat, sun} = weekends[wi];
-        if (sat) {
-          const cnt = (d,t) => nurses.reduce((c,n)=>c+(sc[n.name]?.[d-1]===t?1:0),0);
-          const cdSo=cnt(sat,'CD'), nSo=cnt(sat,'N');
-          const cdNe=sun?cnt(sun,'CD'):'—', nNe=sun?cnt(sun,'N'):'—';
-          log(`V${wi+1}`,'📅',`So(${sat}): CD=${cdSo} N=${nSo}`+(sun?`  Ne(${sun}): CD=${cdNe} N=${nNe}`:''),'#10b981');
-          totalAssigned += cdSo + nSo;
-        }
-      }
-      log('OK','✅',`${totalAssigned} víkendových buněk přiřazeno`,'#10b981');
-
-      // ── KROK 4b — Oprava split víkendů (So bez Ne nebo Ne bez So) ──────
-      // Koudelková je vyloučena — její vzor je záměrně Pá+So (nikdy Ne)
-      {
-        let splitFixed = 0;
-        for (const nurse of nurses) {
-          if (nurse.name === 'Koudelková') continue; // speciální vzor Pá+So
-          const nm = nurse.name;
-          const s = sc[nm];
-          const rm = reqMap[nm] || {};
-          for (const we of weekends) {
-            if (!we.sat || !we.sun) continue;
-            const satV = s[we.sat - 1] || '';
-            const sunV = s[we.sun - 1] || '';
-            const satWork = (satV === 'CD' || satV === 'N');
-            const sunWork = (sunV === 'CD' || sunV === 'N');
-            // Split = jeden den pracovní, druhý prázdný/volný
-            if (satWork && !sunWork) {
-              // Zkus doplnit Ne stejným typem
-              if (!rm[we.sun] && !isLocked(nm, we.sun)) {
-                s[we.sun - 1] = satV;
-                splitFixed++;
-              } else {
-                // Nelze doplnit → smaž So
-                s[we.sat - 1] = '';
-                splitFixed++;
-              }
-            } else if (sunWork && !satWork) {
-              // Zkus doplnit So stejným typem
-              if (!rm[we.sat] && !isLocked(nm, we.sat)) {
-                s[we.sat - 1] = sunV;
-                splitFixed++;
-              } else {
-                // Nelze doplnit → smaž Ne
-                s[we.sun - 1] = '';
-                splitFixed++;
-              }
-            } else if (satWork && sunWork && satV !== sunV) {
-              // Mix CD+N → sjednotit na typ So (So má přednost)
-              s[we.sun - 1] = satV;
-              splitFixed++;
-            }
-          }
-        }
-        if (splitFixed > 0) {
-          log('FIX','🔧',`Opraveno ${splitFixed} split/mix víkendů (So≠Ne → sjednoceno)`,'#f59e0b');
-        }
-      }
-
-      // ── KROK 5 — Návaznosti: N → 2 explicitní volné dny po víkendových nočních ──
-      {
-        let navPropCount = 0;
-        for (const nurse of nurses) {
-          const nm = nurse.name;
-          const s = sc[nm];
-          const rm = reqMap[nm] || {};
-          for (let d = 1; d <= DAYS; d++) {
-            if (s[d-1] !== 'N') continue;
-            for (let off = 1; off <= 2; off++) {
-              const dd = d + off;
-              if (dd > DAYS) break;
-              if (!s[dd-1] && !rm[dd]) { s[dd-1] = 'OFF'; navPropCount++; }
-            }
-          }
-        }
-        if (navPropCount > 0)
-          log('K3b','✅',`N→OFF propagace: ${navPropCount} volných dní po nočních`,'#10b981');
-      }
-
-      // Ulož prevCyclePos pro každou sestru (použije se příští měsíc)
-      // Pravidlo: po CD → příští měsíc startPos=1 (FULL_OFF, pak NN)
-      //           po N  → příští měsíc startPos=3 (FULL_OFF, pak CD)
-      // To zajišťuje: kdo měl poslední víkend pracovní, ten má první víkend OFF
-      // a druhý pracovní víkend dostane opačný typ.
-      activeNurses.forEach(n => {
-        if (n._workedThisMonth) {
-          n.prevCyclePos = (n._lastWorkedType === 'day') ? 0 : 2;
-        } else {
-          n.prevCyclePos = (n._cycleStartPos + weekends.length - 1) % 4;
-        }
-      });
-
-      AGENTS.wk.done = true;
-      agSet('wk','ok',`${totalAssigned} víkendových buněk`);
-
-      ST.schedules[ST.currentMonth] = sc;
-      saveState();
-      autoApplyDovolena(sc, nurses, DAYS);
-      renderRozpisTable(sc, nurses, C);
-      renderMonthTabs();
-      toast('📅 Víkendy vygenerovány','ok');
-      if (typeof onDone === 'function') onDone();
-
-    } catch(e) {
-      agSet('wk','err','Chyba: '+e.message);
-      toast('Chyba víkendů: '+e.message,'err');
-      console.error(e);
-    }
-    btn.disabled = false;
-    btn.textContent = '📅 2. Víkendy';
-  }, 50);
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // ZAMYKÁNÍ BUNĚK
 // ════════════════════════════════════════════════════════════════════════════
@@ -5080,59 +4767,6 @@ function toggleZamekVikendu() {
   const mk = ST.currentMonth;
   const locked = ST.locked[mk] && Object.keys(ST.locked[mk]).length > 0;
   if (locked) unlockAll(); else lockAll();
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// PÁTEK N — VZOR B
-// ════════════════════════════════════════════════════════════════════════════
-function genPatkyN() {
-  const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-  const month=+mS, year=+yS;
-  const C = buildCtx(month, year);
-  const { DAYS, dow, weekends, canPlace } = C;
-  const nurses = ST.nurses.filter(n => n.active && !n.warn);
-  const sc = loadFromTable(nurses, DAYS);
-  const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-
-  const cands = nurses.filter(n =>
-    n.wp === 'B' &&
-    n.noc &&
-    n.uvazek >= 0.75 &&
-    (!n.warn && n.uvazek > 0 && !n.weekendOnly && !n.skipFridayN)
-  );
-
-  let assigned = 0;
-  for (const nurse of cands) {
-    const nm = nurse.name;
-    const rm = reqMap[nm] || {};
-    const s = sc[nm];
-    const opts = weekends.filter(we => {
-      if (!we.fri) return false;
-      if (isLocked(nm, we.fri)) return false;
-      const satV = we.sat ? s[we.sat-1] : '';
-      const sunV = we.sun ? s[we.sun-1] : '';
-      if (satV === 'CD' || satV === 'N') return false;
-      if (sunV === 'CD' || sunV === 'N') return false;
-      if (s[we.fri-1]) return false;
-      if (rm[we.fri] && ['X','dov','/'].includes(rm[we.fri])) return false;
-      // N na pátek nesmí, pokud je sobota hardReq (po noční musí volno)
-      if (we.sat && rm[we.sat] && ['X','dov','/'].includes(rm[we.sat])) return false;
-      return true;
-    });
-    if (!opts.length) continue;
-    opts.sort((a, b) => {
-      const nA = nurses.reduce((c,n) => c + (sc[n.name]?.[a.fri-1]==='N'?1:0), 0);
-      const nB = nurses.reduce((c,n) => c + (sc[n.name]?.[b.fri-1]==='N'?1:0), 0);
-      return nA - nB;
-    });
-    if (safeAssignShift(sc, nurses, reqMap, opts[0].fri, 'N', nurse, canPlace)) assigned++;
-  }
-
-  ST.schedules[ST.currentMonth] = sc;
-  saveState();
-  renderRozpisTable(sc, nurses, C);
-  renderMonthTabs();
-  toast('🌙 Pátky N: ' + assigned + ' sester', assigned > 0 ? 'ok' : 'info');
 }
 
 function smazRozpis() {
@@ -6893,20 +6527,6 @@ function autoOprava() {
 
   addLog('📋 SCAN','🔍',`Nalezeno ${steps.length} problémů (N→CD: ${steps.filter(s=>s.type==='ncd').length}, podstav CD: ${steps.filter(s=>s.type==='missingCD').length}, podstav N: ${steps.filter(s=>s.type==='missingN').length})`,'#f59e0b');
 
-  // ── Pomocná: canPlace BEZ omezení normMax (záchranný režim) ───────────────
-  function canPlaceForce(s, d, sh, nurse) {
-    // Jako canPlace, ale přeskakuje normMax check
-    const nmx = normMax(nurse.uvazek);
-    // Dočasně "přidáme" jeden slot nad normMax pro záchranný přesun
-    const saved = s[d-1];
-    s[d-1] = ''; // zajistíme prázdnost (pro případ re-check)
-    s[d-1] = saved;
-    // Ověříme bez normMax: použijeme canPlace ale po přidání jednoho do normMax
-    const origLen = cWork(s);
-    if (origLen >= nmx+1) return false; // i záchranný limit má hranici (+1)
-    return canPlace(s, d, sh, nurse);
-  }
-
   // ── Pomocná: zkus přesunout sestru z přeplněného dne na podstav den ───────
   function trySwap(sc, nurses, dTarget, shTarget, reqMap) {
     // Hledej sestru která:
@@ -7725,500 +7345,6 @@ function agKontroluj(sc, nurses, C) {
   return problems;
 }
 
-// ── KROK 1: Zapsat požadavky ────────────────────────────────────────────────
-function genPozadavky() {
-  if (isMonthStarted(ST.currentMonth)) { toast('⛔ Tento měsíc je zamčen — generování zakázáno','err'); return; }
-  pushUndo('Požadavky');
-  agReset();
-  agSet('req','run','Zapisuji požadavky...');
-  const btn = document.getElementById('btn-gen-req');
-  btn.disabled = true;
-
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month=+mS, year=+yS;
-      const C = buildCtx(month, year);
-      const {DAYS, dow} = C;
-      const nurses = ST.nurses.filter(n=>n.active&&!n.warn);
-      const sc = loadFromTable(nurses, DAYS);
-      // Vymaž staré požadavky a znovu zapiš (zachovej ostatní směny)
-      nurses.forEach(n => {
-        for (let d=1;d<=DAYS;d++) {
-          const v = sc[n.name][d-1];
-          if (v==='X'||v==='dov'||v==='/') sc[n.name][d-1]='';
-        }
-      });
-      const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-      const reqCount = Object.values(reqMap).reduce((s,m)=>s+Object.keys(m).length, 0);
-      autoApplyDovolena(sc, nurses, DAYS);
-      ST.schedules[ST.currentMonth] = sc;
-      saveState();
-      renderRozpisTable(sc, nurses, C);
-      renderMonthTabs();
-      agSet('req','ok',`✓ ${reqCount} požadavků zapsáno`);
-      toast(`📋 ${reqCount} požadavků zapsáno`,'ok');
-    } catch(e) {
-      agSet('req','err','Chyba: '+e.message);
-      toast('Chyba požadavků: '+e.message,'err');
-      console.error(e);
-    }
-    btn.disabled = false;
-    btn.textContent = '📋 1. Požadavky ✓';
-  }, 50);
-}
-
-// ── KROK 3: Všední dny (K4+K5 z genRozpis bez víkendů) ─────────────────
-function genDenniSluzby() {
-  if (isMonthStarted(ST.currentMonth)) { toast('⛔ Tento měsíc je zamčen — generování zakázáno','err'); return; }
-  pushUndo('Všední dny');
-  // Zkontroluj jestli Víkendy jsou hotové
-  if (!AGENTS.wk.done) {
-    myConfirm('Víkendy ještě nebyly generovány. Generovat všední dny bez víkendů?', () => _genDenniSluzby());
-    return;
-  }
-  _genDenniSluzby();
-}
-
-function _genDenniSluzby() {
-  agSet('daily','run','Generuji všední dny...');
-  agSet('check','idle','');
-  const btn = document.getElementById('btn-gen-daily');
-  btn.disabled = true; btn.textContent = '⏳ Generuji...';
-
-  const statusEl = document.getElementById('rozpis-status');
-  const logs = [];
-  function log(tag,ico,msg,col) {
-    logs.push('<div style="display:flex;gap:6px;padding:3px 0;font-size:11px;border-bottom:1px solid var(--brd2)">'+
-      '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:'+col+'22;color:'+col+';font-weight:700;flex-shrink:0;font-family:var(--mono)">'+tag+'</span>'+
-      '<span style="color:var(--tx2)">'+ico+' '+msg+'</span></div>');
-    statusEl.innerHTML = logs.join('');
-    statusEl.style.display = 'block';
-    statusEl.scrollTop = 9999;
-    setRozpisSummary(logs.length+' záznamy');
-  }
-
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month=+mS, year=+yS;
-      const C = buildCtx(month, year);
-      const {DAYS,dow,isWe,WORK,NIGHT,norm,normMin,normMax,cCD,cN,cDov,cWork,need,weekends,canPlace} = C;
-      const nurses = ST.nurses.filter(n=>n.active&&!n.warn);
-      const sc = loadFromTable(nurses, DAYS);
-
-      // Načti reqMap ze stávajícího rozpisu
-      const reqMap = {};
-      nurses.forEach(n => {
-        reqMap[n.name] = {};
-        for (let d=1;d<=DAYS;d++) {
-          const v = sc[n.name][d-1];
-          if (v==='X'||v==='dov'||v==='/'||v==='R'||v==='OFF') reqMap[n.name][d] = v;
-        }
-      });
-      // wdOff + uvazek===0 — generické (ne jménem)
-      for (const nurse of nurses) {
-        const nm = nurse.name;
-        if (sc[nm] === undefined) continue;
-        if (nurse.wdOff !== undefined) {
-          for (let d=1;d<=DAYS;d++) {
-            if (dow(d)===nurse.wdOff && !sc[nm][d-1] && !reqMap[nm][d]) {
-              sc[nm][d-1]='X'; reqMap[nm][d]='X';
-            }
-          }
-        }
-        if (nurse.uvazek===0) {
-          for (let d=1;d<=DAYS;d++) if(!sc[nm][d-1]&&dow(d)<5) sc[nm][d-1]='R';
-        }
-      }
-
-      // Spočítej dovolenkové kredity před přiřazováním pracovních dnů
-      autoApplyDovolena(sc, nurses, DAYS);
-      log('K4','⚙️','Doplňuji pracovní dny (blokové přiřazování)...','#8b5cf6');
-      const {startTypeOf, expectedType} = C;
-      // countT: how many nurses have shift sh on day d
-      const countT = (d, sh) => nurses.reduce((c,n) => c + (sc[n.name][d-1]===sh?1:0), 0);
-
-      // ── Pre-compute targets: CD/N split per nurse based on remaining need ──────
-      const targetsWd = {};
-      for (const nurse of nurses) {
-        const nm = nurse.name;
-        if (nurse.warn||nurse.uvazek===0||nurse.weekendOnly) continue;
-        const s = sc[nm];
-        const dov = nurse.dovolenaThisMonth !== undefined ? nurse.dovolenaThisMonth : cDov(s);
-        const totalNeed = Math.max(0, need(s, nurse.uvazek, dov));
-        if (totalNeed === 0) { targetsWd[nm] = {needCD:0, needN:0, totalNeed:0}; continue; }
-        const wkp = wkPrefName(nurse);
-        const prefN = nurse.noc && (nurse.wp==='A' || wkp?.prefer_N==='hard' || wkp?.prefer_N==='soft');
-        let needN, needCD;
-        if (!nurse.noc) {
-          needN = 0; needCD = totalNeed;
-        } else if (prefN) {
-          // N-preference: 1 extra N over CD (e.g. 8N:7CD for 15 shifts)
-          needN = Math.min(totalNeed, Math.ceil(totalNeed / 2) + (totalNeed >= 4 ? 1 : 0));
-          needCD = totalNeed - needN;
-        } else {
-          // Even split, slight CD preference
-          needN = Math.floor(totalNeed / 2);
-          needCD = totalNeed - needN;
-        }
-        targetsWd[nm] = { needCD: Math.max(0, needCD), needN: Math.max(0, needN), totalNeed };
-      }
-
-      // ── Block placement helper ───────────────────────────────────────────────
-      // Tries to place up to `size` consecutive shifts of type `sh` starting at dStart.
-      // Returns actual count placed (modifies s in-place, partial blocks are accepted).
-      function tryPlaceBlock(s, dStart, size, sh, nurse) {
-        let placed = 0;
-        for (let bd = dStart; bd < dStart + size && bd <= DAYS; bd++) {
-          if (isWe(bd) || s[bd-1]) break;
-          const cnt = sh==='CD' ? countT(bd,'CD') : countT(bd,'N');
-          if (cnt >= 7) break;
-          if (!canPlace(s, bd, sh, nurse)) break;
-          s[bd-1] = sh;
-          placed++;
-        }
-        return placed;
-      }
-
-      // Sort main nurses by most constrained (most shifts remaining) first
-      const mainNurses = nurses
-        .filter(n => !n.warn && n.uvazek>0 && !n.weekendOnly && !n.noConsecWeekday)
-        .sort((a,b) => {
-          const ta = targetsWd[a.name] || {totalNeed:0};
-          const tb = targetsWd[b.name] || {totalNeed:0};
-          return tb.totalNeed - ta.totalNeed;
-        });
-
-      let workN = 0;
-
-      // ── Pass A: block placement (size 3, then 2) — nurse-first ──────────────
-      for (const blockSize of [3, 2]) {
-        for (const nurse of mainNurses) {
-          const nm = nurse.name;
-          const tgt = targetsWd[nm];
-          if (!tgt || (tgt.needCD + tgt.needN) <= 0) continue;
-          const s = sc[nm];
-          for (let d = 1; d <= DAYS; d++) {
-            if ((tgt.needCD + tgt.needN) <= 0) break;
-            if (s[d-1] || isWe(d)) continue;
-            // Choose shift type based on targets and current daily counts
-            const cdD = countT(d,'CD'), nD = countT(d,'N');
-            const wkp = wkPrefName(nurse);
-            const prefN = nurse.noc && (nurse.wp==='A' || wkp?.prefer_N==='hard' || wkp?.prefer_N==='soft');
-            let sh;
-            if (tgt.needN > 0 && nurse.noc && (prefN || cdD >= 5) && nD < 7) {
-              sh = 'N';
-            } else if (tgt.needCD > 0 && cdD < 7) {
-              sh = 'CD';
-            } else if (tgt.needN > 0 && nurse.noc && nD < 7) {
-              sh = 'N';
-            } else {
-              continue;
-            }
-            if (!canPlace(s, d, sh, nurse)) continue;
-            const placed = tryPlaceBlock(s, d, blockSize, sh, nurse);
-            if (placed > 0) {
-              workN += placed;
-              if (sh==='CD') tgt.needCD = Math.max(0, tgt.needCD - placed);
-              else           tgt.needN  = Math.max(0, tgt.needN  - placed);
-            }
-          }
-        }
-      }
-
-      // ── Pass B: fill remaining singles (nurses who still need shifts) ────────
-      for (const nurse of mainNurses) {
-        const nm = nurse.name;
-        const s = sc[nm];
-        const dov = nurse.dovolenaThisMonth !== undefined ? nurse.dovolenaThisMonth : cDov(s);
-        for (let d = 1; d <= DAYS && need(s, nurse.uvazek, dov) > 0; d++) {
-          if (s[d-1] || isWe(d)) continue;
-          const cdD = countT(d,'CD'), nD = countT(d,'N');
-          const wkp = wkPrefName(nurse);
-          const prefN = nurse.noc && (nurse.wp==='A' || wkp?.prefer_N==='hard' || wkp?.prefer_N==='soft');
-          const pref = (!nurse.noc || !prefN) ? 'CD' : (nD <= cdD ? 'N' : 'CD');
-          const alt  = pref==='CD' ? 'N' : 'CD';
-          for (const sh of [pref, alt]) {
-            if (sh==='N' && !nurse.noc) continue;
-            if ((sh==='CD' ? cdD : nD) >= 7) continue;
-            if (canPlace(s, d, sh, nurse)) { s[d-1]=sh; workN++; break; }
-          }
-        }
-      }
-
-      // ── Pass C: Nováková K. — placed last, only where ≥5 CD already present ─
-      {
-        const novNurse = nurses.find(n => n.name==='Nováková K.');
-        if (novNurse && sc['Nováková K.'] !== undefined) {
-          const sNov = sc['Nováková K.'];
-          const dovNov = novNurse.dovolenaThisMonth !== undefined ? novNurse.dovolenaThisMonth : cDov(sNov);
-          for (let d = 1; d <= DAYS && need(sNov, novNurse.uvazek, dovNov) > 0; d++) {
-            if (sNov[d-1] || isWe(d)) continue;
-            if (countT(d,'CD') >= 5 && canPlace(sNov, d, 'CD', novNurse)) {
-              sNov[d-1] = 'CD'; workN++;
-            }
-          }
-        }
-      }
-
-      log('K4','✅',`${workN} pracovních směn (blokové přiřazení)`,'#8b5cf6');
-
-      // ── KROK 5 — Návaznosti: N → 2 explicitní volné dny (OFF) ─────────────
-      // Po každé noční směně (N) automaticky zamkneme dalších 2 dní jako OFF,
-      // pokud jsou prázdné a nezamčené požadavkem. Prázdné ≠ volno.
-      let navPropCount = 0;
-      for (const nurse of nurses) {
-        const nm = nurse.name;
-        const s = sc[nm];
-        const rm = reqMap[nm] || {};
-        for (let d = 1; d <= DAYS; d++) {
-          if (s[d-1] !== 'N') continue;
-          for (let off = 1; off <= 2; off++) {
-            const dd = d + off;
-            if (dd > DAYS) break;
-            if (!s[dd-1] && !rm[dd]) { s[dd-1] = 'OFF'; navPropCount++; }
-          }
-        }
-      }
-      if (navPropCount > 0)
-        log('K4b','✅',`N→OFF propagace: ${navPropCount} volných dní po nočních`,'#10b981');
-
-      // MUST pravidla
-      const mustApplied = applyMustRules(sc, nurses, C, reqMap);
-      if (mustApplied>0) log('MUST','✅',`${mustApplied}× nutnost vynucena`,'#059669');
-
-      // K5 — balancování
-      log('K5','🔄','Balancuji sestavy...','#ef4444');
-      let swaps=0;
-      for (let pass=0;pass<20;pass++) {
-        let changed=false;
-        for (let d=1;d<=DAYS;d++) {
-          let {cd,n} = dayCounts(sc,nurses,d);
-          // Příliš CD
-          while(cd>7) {
-            let moved=false;
-            for (const nurse of nurses) {
-              const nm=nurse.name;
-              if(sc[nm][d-1]!=='CD'||nurse.warn||nurse.uvazek===0||nurse.weekendOnly)continue;
-              if((reqMap[nm]||{})[d])continue;
-              const s=sc[nm];
-              for(let d2=1;d2<=DAYS&&!moved;d2++){
-                if(d2===d||s[d2-1])continue;
-                const{cd:cd2}=dayCounts(sc,nurses,d2);
-                if(cd2>=7)continue;
-                s[d-1]='';
-                if(canPlace(s,d2,'CD',nurse)){s[d2-1]='CD';cd--;changed=true;swaps++;moved=true;}
-                else s[d-1]='CD';
-              }
-              if(cd<=7)break;
-            }
-            if(!moved)break;
-          }
-          // Málo CD
-          while(cd>0&&cd<5){
-            let added=false;
-            for(const nurse of nurses){
-              const nm=nurse.name;
-              if(nurse.warn||nurse.uvazek===0||nurse.weekendOnly)continue;
-              const s=sc[nm];if(s[d-1])continue;
-              if(cWork(s)<normMax(nurse.uvazek)-cDov(s)&&canPlace(s,d,'CD',nurse)){
-                s[d-1]='CD';cd++;changed=true;swaps++;added=true;
-              }
-              if(cd>=5)break;
-            }
-            if(!added)break;
-          }
-          // Příliš N
-          while(n>7){
-            let moved=false;
-            for(const nurse of nurses){
-              const nm=nurse.name;
-              if(sc[nm][d-1]!=='N'||!nurse.noc||nurse.warn||nurse.uvazek===0||nurse.weekendOnly)continue;
-              if((reqMap[nm]||{})[d])continue;
-              const s=sc[nm];
-              for(let d2=1;d2<=DAYS&&!moved;d2++){
-                if(d2===d||s[d2-1])continue;
-                const{n:n2}=dayCounts(sc,nurses,d2);
-                if(n2>=7)continue;
-                s[d-1]='';
-                if(canPlace(s,d2,'N',nurse)){s[d2-1]='N';n--;changed=true;swaps++;moved=true;}
-                else s[d-1]='N';
-              }
-              if(n<=7)break;
-            }
-            if(!moved)break;
-          }
-          // Málo N
-          while(n>0&&n<5){
-            let added=false;
-            for(const nurse of nurses){
-              const nm=nurse.name;
-              if(!nurse.noc||nurse.warn||nurse.uvazek===0||nurse.weekendOnly)continue;
-              const s=sc[nm];if(s[d-1])continue;
-              if(cWork(s)<normMax(nurse.uvazek)-cDov(s)&&canPlace(s,d,'N',nurse)){
-                s[d-1]='N';n++;changed=true;swaps++;added=true;
-              }
-              if(n>=5)break;
-            }
-            if(!added)break;
-          }
-        }
-        if(!changed)break;
-      }
-      log('K5',swaps>0?'✅':'➡️',`${swaps} přesunů`,'#10b981');
-
-      // ── K5-SWAP: global score swap optimizer ─────────────────────────────────
-      // Score per weekday = |CD-6|² + |N-6|²; we search for nurse-pair swaps
-      // (nurseA day X ↔ nurseB day Y) that reduce total score without violating rules.
-      {
-        const dayScore = d => {
-          const {cd,n} = dayCounts(sc,nurses,d);
-          return Math.pow(cd-6,2) + Math.pow(n-6,2);
-        };
-        let gsImproved = true, gsSwaps = 0;
-        for (let iter = 0; iter < 20 && gsImproved; iter++) {
-          gsImproved = false;
-          outer: for (const nurseA of mainNurses) {
-            const nmA = nurseA.name;
-            const sA = sc[nmA];
-            for (let dX = 1; dX <= DAYS; dX++) {
-              const shA = sA[dX-1];
-              if (!shA || !['CD','N'].includes(shA) || isWe(dX) || (reqMap[nmA]||{})[dX]) continue;
-              for (const nurseB of mainNurses) {
-                const nmB = nurseB.name;
-                if (nmB === nmA) continue;
-                const sB = sc[nmB];
-                for (let dY = 1; dY <= DAYS; dY++) {
-                  const shB = sB[dY-1];
-                  if (!shB || !['CD','N'].includes(shB) || isWe(dY) || (reqMap[nmB]||{})[dY]) continue;
-                  if (dX === dY && shA === shB) continue;
-                  const scoreBefore = dayScore(dX) + (dY!==dX ? dayScore(dY) : 0);
-                  // Try pairwise swap: A loses dX, gains dY (with shB); B loses dY, gains dX (with shA)
-                  sA[dX-1] = ''; sB[dY-1] = '';
-                  if (canPlace(sA,dY,shB,nurseA) && canPlace(sB,dX,shA,nurseB)) {
-                    sA[dY-1] = shB; sB[dX-1] = shA;
-                    const scoreAfter = dayScore(dX) + (dY!==dX ? dayScore(dY) : 0);
-                    if (scoreAfter < scoreBefore) {
-                      gsImproved = true; gsSwaps++;
-                      continue outer; // restart outer loop after improvement
-                    }
-                    sA[dY-1] = ''; sB[dX-1] = '';
-                  }
-                  sA[dX-1] = shA; sB[dY-1] = shB;
-                }
-              }
-            }
-          }
-        }
-        if (gsSwaps > 0) log('K5-SWAP','🔄',`${gsSwaps} globálních swapů (score optimalizace)`,'#3b82f6');
-      }
-
-      // Aktualizuj prevMonth a prevCyclePos
-      nurses.forEach(n => {
-        const nm=n.name;
-        if(nurse.warn||nurse.uvazek===0||nurse.weekendOnly||nurse.noConsecWeekday)return;
-        const s=sc[nm]; let lastType=null,worked=0;
-        for(const we of weekends){const{sat}=we;if(!sat)continue;const t=s[sat-1];if(t==='N'||t==='CD'){lastType=t;worked++;}}
-        if(!lastType)n.prevMonth='volno';
-        else if(worked>=2)n.prevMonth=lastType==='N'?'NN':'CDCD';
-        else n.prevMonth=lastType==='N'?'1N':'1CD';
-        // Ulož pozici v cyklu pro příští měsíc (vychází ze skutečně odpracovaného typu)
-        if(lastType==='CD')n.prevCyclePos=0; // po CD → startPos=1 (FULL_OFF, pak NN)
-        else if(lastType==='N')n.prevCyclePos=2; // po N → startPos=3 (FULL_OFF, pak CD)
-        else{const startPos=C.startTypeOf(n);n.prevCyclePos=(startPos+weekends.length-1)%4;}
-      });
-
-      // ── Autokorekce: opakuj dokud nejsou problémy vyřešeny (max 3 iterace) ──
-      agSet('check','run','Autokontrola...');
-      const autoFixInline = (sc, iter) => {
-        const problems = agKontroluj(sc, nurses, C);
-        if (problems.length === 0 || iter > 3) return problems;
-
-        let fixed = 0;
-        // Oprav N→CD
-        for (const p of problems.filter(x=>x.type==='N→CD')) {
-          const nurse = nurses.find(n=>n.name===p.nurse);
-          if (!nurse) continue;
-          const s = sc[nurse.name];
-          const d = p.day;
-          if (!NIGHT(s[d-2]) || !WORK(s[d-1])) continue;
-          const sh = s[d-1];
-          s[d-1] = '';
-          let placed = false;
-          for (let d2=1; d2<=DAYS && !placed; d2++) {
-            if (d2===d || s[d2-1]) continue;
-            if ((reqMap[nurse.name]||{})[d2]==='X') continue;
-            if (canPlace(s,d2,sh,nurse)) { s[d2-1]=sh; placed=true; fixed++; }
-          }
-          if (!placed) s[d-1]=sh; // nemohl přesunout, vráť
-        }
-        // Oprav podstavy sestav
-        for (const p of problems.filter(x=>x.type==='sestava')) {
-          const d = p.day;
-          const {cd, n} = dayCounts(sc, nurses, d);
-          if (cd > 0 && cd < 5) {
-            for (const nurse of nurses) {
-              if (dayCounts(sc,nurses,d).cd >= 5) break;
-              const nm = nurse.name;
-              if (nurse.warn||nurse.uvazek===0||nurse.weekendOnly) continue;
-              const s = sc[nm];
-              if (s[d-1] || (reqMap[nm]||{})[d]==='X') continue;
-              if (canPlace(s,d,'CD',nurse)) { s[d-1]='CD'; fixed++; }
-            }
-          }
-          if (n > 0 && n < 5) {
-            for (const nurse of nurses) {
-              if (dayCounts(sc,nurses,d).n >= 5) break;
-              const nm = nurse.name;
-              if (!nurse.noc||nurse.warn||nurse.uvazek===0||nurse.weekendOnly) continue;
-              const s = sc[nm];
-              if (s[d-1] || (reqMap[nm]||{})[d]==='X') continue;
-              if (canPlace(s,d,'N',nurse)) { s[d-1]='N'; fixed++; }
-            }
-          }
-        }
-        if (fixed > 0) log('AUTOFIX','🔧',`Iterace ${iter}: opraveno ${fixed} problémů`,'#f59e0b');
-        return autoFixInline(sc, iter+1);
-      };
-
-      const remaining = autoFixInline(sc, 1);
-
-      autoApplyDovolena(sc, nurses, DAYS);
-      ST.schedules[ST.currentMonth] = sc;
-      saveState();
-      renderRozpisTable(sc, nurses, C);
-      renderMonthTabs();
-
-      AGENTS.daily.done = true;
-      if (remaining.length === 0) {
-        agSet('daily','ok','Hotovo');
-        agSet('check','ok','Vše v pořádku ✓');
-        toast('✅ Všední dny vygenerovány bez chyb','ok');
-      } else {
-        const errs = remaining.filter(p=>p.type==='N→CD').length;
-        const weErrs = remaining.filter(p=>p.type==='4víkendy').length;
-        const seErrs = remaining.filter(p=>p.type==='sestava').length;
-        agSet('daily', errs>0?'warn':'ok', `${workN} směn`);
-        agSet('check', remaining.length>0?'warn':'ok',
-          `${remaining.length} problémů: N→CD:${errs} sestava:${seErrs} víkendy:${weErrs}`);
-        if (errs>0)   toast(`⚠️ ${errs}× N→CD — zkus Hlídač`,'info');
-        if (weErrs>0) toast(`⚠️ ${weErrs} sester má 4 víkendy — zkus Víkendy znovu`,'info');
-      }
-      log('VÝSLEDEK', remaining.length===0?'🎉':'⚠️',
-        remaining.length===0 ? 'Vše OK' :
-        `${remaining.length} problémů zbývá — N→CD:${remaining.filter(p=>p.type==='N→CD').length}, sestavy:${remaining.filter(p=>p.type==='sestava').length}`,
-        remaining.length===0?'#10b981':'#f59e0b');
-
-    } catch(e) {
-      agSet('daily','err','Chyba: '+e.message);
-      toast('Chyba denních služeb: '+e.message,'err');
-      console.error(e);
-    }
-    btn.disabled=false; btn.textContent='⚡ 3. Všední dny';
-  }, 50);
-}
-
 // ════════════════════════════════════════════════════════════════════════════
 // ENGINE BRIDGE (UI ↔ engine)
 // - UI schedule používá: "" (volno) a "dov" (dovolená)
@@ -8226,240 +7352,264 @@ function _genDenniSluzby() {
 // ════════════════════════════════════════════════════════════════════════════
 const ENG = {
   _mod: null,
-  async ensure() {
-    if (this._mod) return this._mod;
+  buildMonthCtx(month, year){
+    const DAYS = new Date(year, month, 0).getDate();
+    const isFri={}, isWeekend={};
+    for(let d=1; d<=DAYS; d++){
+      const js = new Date(year, month-1, d).getDay();
+      const iso = js===0?7:js;
+      isFri[d] = iso===5;
+      isWeekend[d] = (iso===6 || iso===7);
+    }
+    const weekends=[]; let idx=0;
+    for(let d=1; d<=DAYS; d++){
+      const js = new Date(year, month-1, d).getDay();
+      const iso = js===0?7:js;
+      if(iso===6 && d+1<=DAYS){
+        const js2 = new Date(year, month-1, d+1).getDay();
+        const iso2 = js2===0?7:js2;
+        if(iso2===7){
+          idx++;
+          const fri = (d-1>=1 && isFri[d-1]) ? d-1 : null;
+          weekends.push({idx,fri,sat:d,sun:d+1});
+        }
+      }
+    }
+    return {DAYS,isFri,isWeekend,weekends};
+  },
+  async ensure(){
+    if(this._mod) return this._mod;
+
     const mod = await import('./engine.js');
+    const run = typeof mod.generateMonth === 'function'
+      ? ({nurses,month,year,reqs,prev}) => mod.generateMonth({nurses,month,year,reqs:reqs||[],prev:prev||null})
+      : typeof mod.generateSchedule === 'function'
+        ? ({nurses,month,year,reqs,prev}) => mod.generateSchedule({
+            nurses,
+            requirements: reqs || [],
+            month,
+            year,
+            prevSchedule: prev || null,
+          })
+        : null;
+
+    if(!run){
+      throw new Error('engine.js: chybí export generateMonth(...) nebo generateSchedule(...)');
+    }
+
+    if(typeof mod.buildMonthCtx === 'function'){
+      this.buildMonthCtx = mod.buildMonthCtx;
+    }
+
     this._mod = {
-      SHIFT: mod.SHIFT || {},
-      buildMonthCtx: mod.buildMonthCtx,
-      generateMonth({ nurses, month, year, reqs, prev, staffing }) {
-        const out = mod.generateSchedule({
-          nurses,
-          requirements: reqs,
-          month,
-          year,
-          staffing,
-          prevSchedule: prev || null,
-        });
-        return { ...out, sc: out.schedule };
-      },
+      generateMonth({nurses,month,year,reqs,prev}){
+        const out = run({nurses,month,year,reqs,prev});
+        if(out && out.sc) return out;
+        if(out && out.schedule) return { ...out, sc: out.schedule };
+        throw new Error('engine.js: engine musí vrátit {sc} nebo {schedule}');
+      }
     };
     return this._mod;
   }
 };
 
-// Parse "1,2,3, 14-16" -> [1,2,3,14,15,16]
-function parseDaysList(str) {
-  const s = (str || '').toString().trim();
-  if (!s) return [];
+async function genVse() {
+  if (isMonthStarted(ST.currentMonth)) {
+    toast('⛔ Tento měsíc je zamčen — generování zakázáno','err');
+    return;
+  }
+
+  agReset();
+  agSet('req','run','Engine...');
+  agSet('wk','run','Engine...');
+  agSet('fri','run','Engine...');
+  agSet('daily','run','Engine...');
+  agSet('check','run','Kontroluji...');
+
+  try {
+    await runEngineAndApplyPart('all');
+    agSet('req','ok','✓');
+    agSet('wk','ok','✓');
+    agSet('fri','ok','✓');
+    agSet('daily','ok','✓');
+    agSet('check','ok','Hotovo');
+    toast('✅ Engine vygeneroval rozpis','ok');
+  } catch (e) {
+    console.error(e);
+    agSet('check','err','Chyba: ' + e.message);
+    toast('Chyba engine: ' + e.message,'err');
+  }
+}
+
+// ===== ENGINE STEP CONTROLLER (PASTE ONCE) ===============================
+
+function getMonthYearFromUI(){
+  const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
+  return { month:+mS, year:+yS };
+}
+function getNursesUI(){
+  return ST.nurses.filter(n => n.active && !n.warn);
+}
+function nursesUiToEngine(nursesUI){
+  return nursesUI.map(n => ({
+    name: n.name,
+    fte: Number(n.uvazek || 0),
+    exp: (n.zkus === 'Z'),
+    canNight: !!n.noc,
+    active: !!n.active
+  }));
+}
+function getPrevForEngine(month, year){
+  const prevMonth = month===1 ? 12 : month-1;
+  const prevYear  = month===1 ? year-1 : year;
+  const prevKey   = `${prevMonth}-${prevYear}`;
+  const prevUi    = ST.schedules?.[prevKey] || null;
+  return uiPrevToEngine(prevUi, prevMonth, prevYear);
+}
+
+// Parse "1,2,3, 14-16" → [1,2,3,14,15,16]
+function parseDaysList(str){
+  const s = (str||'').toString().trim();
+  if(!s) return [];
   const out = new Set();
-  s.split(/[;,\s]+/).filter(Boolean).forEach(tok => {
-    if (tok.includes('-')) {
-      const [a, b] = tok.split('-').map(x => parseInt(x, 10));
-      if (Number.isFinite(a) && Number.isFinite(b)) {
-        const lo = Math.min(a, b), hi = Math.max(a, b);
-        for (let d = lo; d <= hi; d++) out.add(d);
+  s.split(/[;,\s]+/).filter(Boolean).forEach(tok=>{
+    if(tok.includes('-')){
+      const [a,b] = tok.split('-').map(x=>parseInt(x,10));
+      if(Number.isFinite(a)&&Number.isFinite(b)){
+        const lo=Math.min(a,b), hi=Math.max(a,b);
+        for(let d=lo; d<=hi; d++) out.add(d);
       }
     } else {
-      const d = parseInt(tok, 10);
-      if (Number.isFinite(d)) out.add(d);
+      const d = parseInt(tok,10);
+      if(Number.isFinite(d)) out.add(d);
     }
   });
-  return [...out].sort((a, b) => a - b);
+  return [...out].sort((a,b)=>a-b);
 }
 
-function toEngineReqValue(sym) {
-  const raw = (sym || 'X').toString().trim();
-  const upper = raw.toUpperCase();
-  if (!raw) return 'X';
-  if (raw === '/' || raw === 'dov' || upper === 'DOV' || upper === 'D' || upper === 'DOVOLENA' || upper === 'DOVOLENÁ') return 'DOV';
-  return raw;
-}
-
-// ST.reqs (UI) -> engine reqs [{name,day,value}]
-function collectEngineReqsFor(month) {
+// ST.reqs → engine reqs
+function collectEngineReqsFor(month){
   const reqs = [];
-  (ST.reqs || []).forEach(r => {
-    if ((r.month | 0) !== (month | 0)) return;
+  (ST.reqs||[]).forEach(r=>{
+    if((r.month|0) !== (month|0)) return;
     const days = parseDaysList(r.days);
-    const sym = toEngineReqValue(r.sym);
-    for (const d of days) {
+    const sym  = (r.sym||'X').toString().trim();
+    for(const d of days){
       reqs.push({ name: r.nurse, day: d, value: sym });
     }
   });
   return reqs;
 }
 
-// engine schedule -> UI schedule ("" + "dov")
-function engineToUiSc(engineSc, ctx, nurses) {
+// engine schedule → UI schedule
+function engineToUiSc(engineSc, ctx, nurses){
   const sc = {};
-  for (const n of nurses) {
+  for(const n of nurses){
     const nm = n.name;
     const arr = engineSc[nm] || Array(ctx.DAYS).fill('');
-    sc[nm] = arr.map(v => {
-      const x = (v || '').toString();
-      if (x === '-' || x === 'OFF') return '';
-      if (x === 'DOV') return 'dov';
+    sc[nm] = arr.map(v=>{
+      const x = (v||'').toString();
+      if(x==='-' || x==='OFF') return '';
+      if(x==='DOV') return 'dov';
       return x;
     });
   }
   return sc;
 }
 
-// UI schedule (ST.schedules) -> engine prev
-async function uiPrevToEngine(prevScUi, prevMonth, prevYear) {
-  if (!prevScUi) return null;
-  const eng = await ENG.ensure();
-  const ctxPrev = eng.buildMonthCtx(prevMonth, prevYear);
+// UI prev schedule → engine prev
+function uiPrevToEngine(prevScUi, prevMonth, prevYear){
+  if(!prevScUi) return null;
+  const ctxPrev = ENG.buildMonthCtx(prevMonth, prevYear);
   const scPrev = {};
-  for (const nm of Object.keys(prevScUi)) {
+  for(const nm of Object.keys(prevScUi)){
     const arr = prevScUi[nm] || [];
-    scPrev[nm] = Array(ctxPrev.DAYS).fill('-').map((_, i) => {
-      const v = (arr[i] || '').toString();
-      if (!v) return '-';
-      if (v === 'dov') return 'DOV';
+    scPrev[nm] = Array(ctxPrev.DAYS).fill('-').map((_,i)=>{
+      const v = (arr[i]||'').toString();
+      if(!v) return '-';
+      if(v==='dov') return 'DOV';
       return v;
     });
   }
   return { ctx: ctxPrev, sc: scPrev };
 }
 
-function buildEngineStaffing(month, year) {
-  const ctx = buildCtx(month, year);
-  const minPerShift = SHIFT_LIMITS?.minTotal || 5;
-  const staffing = {};
-  for (let d = 1; d <= ctx.DAYS; d++) {
-    staffing[d] = {
-      cdMin: minPerShift,
-      nMin: minPerShift,
-      twoPCDMin: 0,
-      twoPNMin: 0,
-    };
+// partial merge: overwrite only selected days
+function applyPartialScheduleToUI({ctxUi, nursesUI, scUiExisting, scUiNew, dayMask}){
+  const out = {};
+  for(const n of nursesUI){
+    const nm = n.name;
+    const oldArr = scUiExisting?.[nm] || Array(ctxUi.DAYS).fill('');
+    const newArr = scUiNew?.[nm] || Array(ctxUi.DAYS).fill('');
+    const merged = oldArr.slice();
+    for(let d=1; d<=ctxUi.DAYS; d++){
+      if(dayMask(d)) merged[d-1] = newArr[d-1];
+    }
+    out[nm] = merged;
   }
-  return staffing;
+  return out;
 }
 
-// ── Spustit vše za sebou 1→2→3 ──────────────────────────────────────────────
-function genVse_old() {
-  if (isMonthStarted(ST.currentMonth)) { toast('⛔ Tento měsíc je zamčen — generování zakázáno','err'); return; }
-  agReset();
-  agSet('req','run','...');
+function maskWeekends(ctx){ return d => typeof ctx.isWe === 'function' ? ctx.isWe(d) : !!ctx.isWeekend?.[d]; }
+function maskFridays(ctx){ return d => typeof ctx.dow === 'function' ? ctx.dow(d) === 4 : !!ctx.isFri?.[d]; }
+function maskWeekdays(ctx){ return d => !maskWeekends(ctx)(d); }
 
-  const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-  const month=+mS, year=+yS;
-  const C = buildCtx(month, year);
-  const {DAYS,dow} = C;
-  const nurses = ST.nurses.filter(n=>n.active&&!n.warn);
-
-  // Krok 1 — požadavky
-  const sc = {};
-  nurses.forEach(n=>{ sc[n.name]=Array(DAYS).fill(''); });
-  const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-  const reqCount = Object.values(reqMap).reduce((s,m)=>s+Object.keys(m).length,0);
-  agSet('req','ok',`${reqCount} požadavků`);
-  AGENTS.req.done = true;
-
-  // Krok 2 — víkendy
-  agSet('wk','run','Generuji víkendy...');
-  ST.schedules[ST.currentMonth] = sc;
-
-  setTimeout(() => genVikendy(() => {
-    // Krok 3 — pátek N
-    setTimeout(() => genPatekN(() => {
-      // Krok 4 — všední dny
-      setTimeout(() => genVsedniDny(() => {
-        // Krok 5 — repair kapacit
-        repairShiftCaps(() => {
-          renderRozpis();
-          updateDash();
-        });
-      }), 200);
-    }), 100);
-  }), 100);
-}
-
-async function genVse() {
+async function runEngineAndApplyPart(part){
   if (isMonthStarted(ST.currentMonth)) {
-    toast('⛔ Tento měsíc je zamčen — generování zakázáno', 'err');
+    toast('⛔ Tento měsíc je zamčen — generování zakázáno','err');
     return;
   }
 
-  agReset();
-  agSet('req', 'run', 'Engine...');
-  agSet('wk', 'run', 'Engine...');
-  agSet('fri', 'run', 'Engine...');
-  agSet('daily', 'run', 'Engine...');
-  agSet('check', 'run', 'Kontroluji...');
+  const eng = await ENG.ensure();
+  const {month, year} = getMonthYearFromUI();
 
-  try {
-    const [mS, yS] = document.getElementById('rozpis-month').value.split('-');
-    const month = +mS, year = +yS;
+  const nursesUI = getNursesUI();
+  const nursesEngine = nursesUiToEngine(nursesUI);
 
-    const nursesUI = ST.nurses.filter(n => n.active && !n.warn);
-    const nursesEngine = nursesUI.map(n => ({
-      name: n.name,
-      fte: Number(n.uvazek || 0),
-      exp: n.zkus === 'Z',
-      canNight: !!n.noc,
-      active: !!n.active,
-      p2: !!n.p2,
-      p2type: n.p2type || '',
-    }));
+  const reqsEngine = collectEngineReqsFor(month);
+  const prevEng = getPrevForEngine(month, year);
 
-    const reqsEngine = collectEngineReqsFor(month);
-    agSet('req', 'ok', `${reqsEngine.length} dní požadavků`);
+  const out = eng.generateMonth({ nurses: nursesEngine, month, year, reqs: reqsEngine, prev: prevEng });
 
-    const prevMonth = month === 1 ? 12 : month - 1;
-    const prevYear = month === 1 ? year - 1 : year;
-    const prevKey = `${prevMonth}-${prevYear}`;
-    const prevUi = ST.schedules?.[prevKey] || null;
-    const prevEng = await uiPrevToEngine(prevUi, prevMonth, prevYear);
-    const staffing = buildEngineStaffing(month, year);
-    const eng = await ENG.ensure();
+  const ctxUi = buildCtx(month, year);
+  const scUiNew = engineToUiSc(out.sc, ctxUi, nursesUI);
 
-    const out = eng.generateMonth({
-      nurses: nursesEngine,
-      month,
-      year,
-      reqs: reqsEngine,
-      prev: prevEng,
-      staffing,
-    });
+  const existing = ST.schedules?.[ST.currentMonth] || {};
 
-    agSet('wk', 'ok', '✓');
-    agSet('fri', 'ok', '✓');
-    agSet('daily', 'ok', '✓');
-
-    const ctxUi = buildCtx(month, year);
-    const scUi = engineToUiSc(out.sc, ctxUi, nursesUI);
-
-    if (typeof autoApplyDovolena === 'function') {
-      autoApplyDovolena(scUi, nursesUI, ctxUi.DAYS);
-    }
-
-    ST.schedules[ST.currentMonth] = scUi;
-    saveState();
-
-    if (typeof renderRozpis === 'function') renderRozpis();
-    else if (typeof renderCurrentRozpis === 'function') renderCurrentRozpis();
-    else loadScheduleForMonth(ST.currentMonth);
-
-    updateDash();
-
-    if (out.violations && out.violations.length) {
-      agSet('check', 'warn', `${out.violations.length} pravidel k dořešení`);
-      toast(`⚠️ Engine vygeneroval rozpis, ale našel ${out.violations.length} porušení`, 'info');
-    } else {
-      agSet('check', 'ok', 'Hotovo');
-      toast('✅ Engine vygeneroval rozpis', 'ok');
-    }
-  } catch (e) {
-    console.error(e);
-    agSet('check', 'warn', 'Engine selhal, vracím fallback');
-    toast('Chyba engine: ' + e.message + ' · spouštím původní generátor', 'err');
-    return genVse_old();
+  let dayMask;
+  if(part === 'req'){
+    const reqDaySet = new Set(reqsEngine.map(r=>r.day));
+    dayMask = (d)=>reqDaySet.has(d);
+  } else if(part === 'wk'){
+    dayMask = maskWeekends(ctxUi);
+  } else if(part === 'fri'){
+    dayMask = maskFridays(ctxUi);
+  } else if(part === 'wd'){
+    dayMask = maskWeekdays(ctxUi);
+  } else {
+    dayMask = ()=>true;
   }
+
+  const merged = applyPartialScheduleToUI({
+    ctxUi,
+    nursesUI,
+    scUiExisting: existing,
+    scUiNew,
+    dayMask
+  });
+
+  ST.schedules[ST.currentMonth] = merged;
+  saveState();
+  renderRozpis();
+  updateDash();
 }
+
+async function stepRequirements(){ await runEngineAndApplyPart('req'); toast('✅ Požadavky zapsány','ok'); }
+async function stepWeekends(){ await runEngineAndApplyPart('wk'); toast('✅ Víkendy zapsány','ok'); }
+async function stepFridays(){ await runEngineAndApplyPart('fri'); toast('✅ Pátky zapsány','ok'); }
+async function stepWeekdays(){ await runEngineAndApplyPart('wd'); toast('✅ Všední dny zapsány','ok'); }
+
+// ========================================================================
 
 // ═══════════════════════════════════════════════════════════════════════════
 // APRIL 2026 — reálný rozpis z PDF v2 (aktualizováno 6.4.2026)
@@ -8860,310 +8010,6 @@ function resetApril2026() {
   updateMonthLock();
   updateBadges();
   toast('✅ Duben 2026 obnoven na výchozí data', 'ok');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// genVsedniDny — doplní všední dny s respektováním kapacitních limitů
-// ═══════════════════════════════════════════════════════════════════════════
-function genVsedniDny(onDone) {
-  const statusEl = document.getElementById('rozpis-status');
-  const logs = [];
-  function log(tag, ico, msg, col){
-    logs.push('<div style="display:flex;gap:6px;padding:3px 0;font-size:11px;border-bottom:1px solid var(--brd2)">'+
-      '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:'+col+'22;color:'+col+';font-weight:700;flex-shrink:0;font-family:var(--mono)">'+tag+'</span>'+
-      '<span style="color:var(--tx2)">'+ico+' '+msg+'</span></div>');
-    statusEl.innerHTML = logs.join('');
-    statusEl.scrollTop = 9999;
-    setRozpisSummary(logs.length + ' záznamy');
-  }
-
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month = +mS, year = +yS;
-      const C = buildCtx(month, year);
-      const { DAYS, dow, canPlace } = C;
-
-      const nurses = ST.nurses.filter(n => n.active && !n.warn);
-      const usable = nurses.filter(n => !n.weekendOnly && n.uvazek > 0);
-      const sc = loadFromTable(nurses, DAYS);
-      const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-
-      function isWeekday(d){
-        const w = dow(d);
-        return w >= 1 && w <= 5;
-      }
-
-      function candidateList(d, sh){
-        return sortCandidatesForFill(
-          sc,
-          nurses,
-          d,
-          sh,
-          usable.filter(n => {
-            const nm = n.name;
-            if (nurseHasShift(sc, nm, d)) return false;
-            if (hasHardReqOnDay(reqMap, nm, d)) return false;
-            if (sh === 'N' && !n.noc) return false;
-            if (!canPlace(sc[nm], d, sh, n)) return false;
-            if (!canAddToShift(sc, nurses, d, sh, n)) return false;
-            return true;
-          })
-        );
-      }
-
-      // PASS 1: dorovnej minima na všech všedních dnech
-      for (let d = 1; d <= DAYS; d++) {
-        if (!isWeekday(d)) continue;
-
-        for (const sh of ['CD','N']) {
-          let guard = 0;
-          while (shiftMix(sc, nurses, d, sh).total < SHIFT_LIMITS.minTotal && guard < 50) {
-            guard++;
-            const cands = candidateList(d, sh);
-            const nurse = cands[0];
-            if (!nurse) break;
-
-            if (safeAssignShift(sc, nurses, reqMap, d, sh, nurse, canPlace)) {
-              log('WD', '➕', `${nurse.name} → den ${d} ${sh}`, '#10b981');
-            } else {
-              break;
-            }
-          }
-        }
-      }
-
-      // PASS 2: jemné doplnění zkušených tam, kde je směna sice 5+, ale má málo Z
-      for (let d = 1; d <= DAYS; d++) {
-        if (!isWeekday(d)) continue;
-
-        for (const sh of ['CD','N']) {
-          const mix = shiftMix(sc, nurses, d, sh);
-          if (mix.total >= SHIFT_LIMITS.maxTotal) continue;
-          if (mix.z >= 4) continue;
-
-          const zcands = candidateList(d, sh).filter(n => getZkusGroup(n) === 'Z');
-          const nurse = zcands[0];
-          if (!nurse) continue;
-
-          if (safeAssignShift(sc, nurses, reqMap, d, sh, nurse, canPlace)) {
-            log('WD', '⭐', `${nurse.name} doplněna jako zkušená → den ${d} ${sh}`, '#3b82f6');
-          }
-        }
-      }
-
-      // PASS 3: zkus stáhnout přestavy >7
-      for (let d = 1; d <= DAYS; d++) {
-        if (!isWeekday(d)) continue;
-
-        for (const sh of ['CD','N']) {
-          let mix = shiftMix(sc, nurses, d, sh);
-          if (mix.total <= SHIFT_LIMITS.maxTotal) continue;
-
-          const assigned = usable
-            .filter(n => (sc[n.name]?.[d-1] === sh))
-            .sort((a,b)=>{
-              const ga = getZkusGroup(a), gb = getZkusGroup(b);
-              if (ga !== gb) {
-                if (ga === 'N') return -1;
-                if (gb === 'N') return 1;
-                if (ga === 'M') return -1;
-                if (gb === 'M') return 1;
-              }
-              return countS(sc[b.name] || []) - countS(sc[a.name] || []);
-            });
-
-          for (const nurse of assigned) {
-            mix = shiftMix(sc, nurses, d, sh);
-            if (mix.total <= SHIFT_LIMITS.maxTotal) break;
-
-            if (!safeRemoveShift(sc, nurses, d, nurse)) continue;
-            log('WD', '➖', `${nurse.name} odebrána z den ${d} ${sh} kvůli přestavu`, '#f59e0b');
-
-            // zkus ji přesunout jinam na stejný typ směny
-            let moved = false;
-            for (let d2 = 1; d2 <= DAYS; d2++) {
-              if (d2 === d || !isWeekday(d2)) continue;
-              if (safeAssignShift(sc, nurses, reqMap, d2, sh, nurse, canPlace)) {
-                log('WD', '↔️', `${nurse.name} přesunuta ${d}→${d2} ${sh}`, '#8b5cf6');
-                moved = true;
-                break;
-              }
-            }
-
-            if (!moved) {
-              // nevracej ji zpět automaticky, pokud by znovu dělala přestav
-            }
-          }
-        }
-      }
-
-      ST.schedules[ST.currentMonth] = sc;
-      renderRozpis();
-      updateDash();
-      toast('Všední dny vygenerovány','ok');
-
-      if (typeof onDone === 'function') onDone();
-    } catch (e) {
-      console.error(e);
-      toast('Chyba při generování všedních dnů','err');
-    }
-  }, 30);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// genPatekN — přidá páteční noční u sester s N-N víkendem
-// ═══════════════════════════════════════════════════════════════════════════
-function genPatekN(onDone) {
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month = +mS, year = +yS;
-      const C = buildCtx(month, year);
-      const { DAYS, dow, weekends, canPlace } = C;
-      const nurses = ST.nurses.filter(n => n.active && !n.warn);
-      const sc = loadFromTable(nurses, DAYS);
-      const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-
-      for (const we of weekends) {
-        const fri = we.sat - 1;
-        if (fri < 1) continue;
-
-        // pátek N chceme jen tam, kde už má sestra víkendový noční pattern
-        const candidates = nurses.filter(n => {
-          const nm = n.name;
-          if (!n.noc) return false;
-          if (nurseHasShift(sc, nm, fri)) return false;
-          if (hasHardReqOnDay(reqMap, nm, fri)) return false;
-
-          const sat = sc[nm]?.[we.sat - 1];
-          const sun = sc[nm]?.[we.sun - 1];
-          const hasNightWeekend = sat === 'N' && sun === 'N';
-          if (!hasNightWeekend) return false;
-
-          if (!canPlace(sc[nm], fri, 'N', n)) return false;
-          if (!canAddToShift(sc, nurses, fri, 'N', n)) return false;
-
-          return true;
-        }).sort((a,b)=>{
-          const sa = countS(sc[a.name] || []);
-          const sb = countS(sc[b.name] || []);
-          return sa - sb;
-        });
-
-        const nurse = candidates[0];
-        if (!nurse) continue;
-
-        safeAssignShift(sc, nurses, reqMap, fri, 'N', nurse, canPlace);
-      }
-
-      ST.schedules[ST.currentMonth] = sc;
-      renderRozpis();
-      updateDash();
-      toast('Pátek N vygenerován','ok');
-
-      if (typeof onDone === 'function') onDone();
-    } catch (e) {
-      console.error(e);
-      toast('Chyba při generování pátku N','err');
-    }
-  }, 30);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// repairShiftCaps — záchranná síť: dorovná minima, odstraní přestavy
-// ═══════════════════════════════════════════════════════════════════════════
-function repairShiftCaps(onDone){
-  agSet('bal','run','Opravuji kapacity...');
-  setTimeout(() => {
-    try {
-      const [mS,yS] = document.getElementById('rozpis-month').value.split('-');
-      const month = +mS, year = +yS;
-      const C = buildCtx(month, year);
-      const { DAYS, dow, canPlace } = C;
-
-      const nurses = ST.nurses.filter(n => n.active && !n.warn);
-      const sc = loadFromTable(nurses, DAYS);
-      const reqMap = applyRequirements(sc, nurses, month, DAYS, dow, year);
-
-      // 1) dorovnat minima
-      for (let d = 1; d <= DAYS; d++) {
-        for (const sh of ['CD','N']) {
-          let guard = 0;
-          while (shiftMix(sc, nurses, d, sh).total < SHIFT_LIMITS.minTotal && guard < 50) {
-            guard++;
-
-            const cands = sortCandidatesForFill(
-              sc,
-              nurses,
-              d,
-              sh,
-              nurses.filter(n => {
-                const nm = n.name;
-                if (n.warn || n.uvazek === 0) return false;
-                if (nurseHasShift(sc, nm, d)) return false;
-                if (hasHardReqOnDay(reqMap, nm, d)) return false;
-                if (sh === 'N' && !n.noc) return false;
-                if (!canPlace(sc[nm], d, sh, n)) return false;
-                if (!canAddToShift(sc, nurses, d, sh, n)) return false;
-                return true;
-              })
-            );
-
-            const nurse = cands[0];
-            if (!nurse) break;
-            safeAssignShift(sc, nurses, reqMap, d, sh, nurse, canPlace);
-          }
-        }
-      }
-
-      // 2) zkus odstranit přestavy
-      for (let d = 1; d <= DAYS; d++) {
-        for (const sh of ['CD','N']) {
-          let mix = shiftMix(sc, nurses, d, sh);
-          if (mix.total <= SHIFT_LIMITS.maxTotal) continue;
-
-          const assigned = nurses
-            .filter(n => sc[n.name]?.[d-1] === sh)
-            .sort((a,b)=>{
-              const ga = getZkusGroup(a), gb = getZkusGroup(b);
-              if (ga !== gb) {
-                if (ga === 'N') return -1;
-                if (gb === 'N') return 1;
-                if (ga === 'M') return -1;
-                if (gb === 'M') return 1;
-              }
-              return countS(sc[b.name] || []) - countS(sc[a.name] || []);
-            });
-
-          for (const nurse of assigned) {
-            mix = shiftMix(sc, nurses, d, sh);
-            if (mix.total <= SHIFT_LIMITS.maxTotal) break;
-            safeRemoveShift(sc, nurses, d, nurse);
-          }
-        }
-      }
-
-      ST.schedules[ST.currentMonth] = sc;
-      renderRozpis();
-      updateDash();
-
-      const problems = auditShiftCaps(sc, nurses, DAYS);
-      if (problems.length) {
-        agSet('bal','warn',`Zůstává ${problems.length} kapacitních problémů`);
-        toast(`Kapacitní problémy: ${problems.length}`,'warn');
-      } else {
-        agSet('bal','ok','Kapacity v pořádku');
-        toast('Kapacity směn opraveny','ok');
-      }
-
-      if (typeof onDone === 'function') onDone();
-    } catch (e) {
-      console.error(e);
-      agSet('bal','err','Chyba');
-      toast('Chyba při opravě kapacit','err');
-    }
-  }, 30);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
